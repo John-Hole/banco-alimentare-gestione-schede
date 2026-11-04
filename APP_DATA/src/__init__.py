@@ -1,0 +1,1 @@
+"""Banco Alimentare - Modulo principale."""

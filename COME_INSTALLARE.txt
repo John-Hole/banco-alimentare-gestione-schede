@@ -1,0 +1,36 @@
+================================================================================
+  GUIDA RAPIDA DI INSTALLAZIONE E PRIMO AVVIO — BANCO ALIMENTARE (V4 UFFICIALE)
+================================================================================
+
+1. PREREQUISITI SU UN NUOVO PC WINDOWS
+   - Windows 10 o Windows 11.
+   - Microsoft Excel installato.
+   - Python 3.10 o superiore installato da https://www.python.org/downloads/
+     (IMPORTANTE: durante l'installazione di Python, spunta "Add Python to PATH").
+
+2. AVVIO CON 1 CLIC (INSTALLA DA SOLO LE LIBRERIE AL 1° AVVIO)
+   - Fai doppio clic su:
+       AVVIA_BANCO_ALIMENTARE.bat
+   - Se è la prima volta che apri il programma su questo PC, il file rileverà
+     automaticamente l'assenza delle librerie e le installerà da solo.
+   - Dal secondo avvio in poi, l'applicazione si aprirà istantaneamente senza
+     alcuna finestra nera di terminale.
+
+3. CONFIGURAZIONE DELLE CHIAVI API AL PRIMO AVVIO
+   Alla prima apertura comparirà la finestra di benvenuto:
+   - OPZIONE A (Sblocco Rapido con Password):
+     Inserisci la password del profilo nel riquadro "🔐 Sblocco Rapido Profilo Giovanni"
+     e premi Invio (o clicca "Sblocca Chiavi"): tutte le 3 chiavi API verranno
+     decifrate e attivate all'istante.
+   - OPZIONE B (Inserimento Manuale):
+     Incolla la tua chiave gratuita Google AI Studio (Gemini) e/o OpenRouter.
+   - Puoi anche selezionare subito la cartella con i Fogli Excel della Colletta
+     (oppure usare la cartella predefinita FOGLI_COLLETTA).
+
+4. STRUTTURA DELLE CARTELLE PRINCIPALI
+   - AVVIA_BANCO_ALIMENTARE.bat  -> Unico file da cliccare per aprire il programma
+   - FOGLI_COLLETTA/             -> Cartella predefinita con i file Excel di zona
+   - SCANSIONI/                  -> Archivio storico delle schede scansionate e validate
+   - BACKUP/                     -> Copie di sicurezza automatiche dei file Excel
+   - APP_DATA/                   -> Motore tecnico, codice sorgente e configurazione
+================================================================================

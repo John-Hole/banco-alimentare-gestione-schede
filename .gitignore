@@ -1,0 +1,47 @@
+# Configurazione locale e chiavi API segrete (MAI su GitHub)
+config.json
+APP_DATA/config.json
+*.key
+*_key.txt
+.env
+.env.*
+
+# Cartelle generate a runtime e dati operativi
+BACKUP/*
+!BACKUP/.gitkeep
+SCANSIONI/*
+!SCANSIONI/.gitkeep
+/backups/
+/storico_scansioni/
+/logs/
+APP_DATA/logs/*
+!APP_DATA/logs/.gitkeep
+usage_stats.json
+APP_DATA/usage_stats.json
+
+# Immagini temporanee generate dallo scanner, da PDF o dall'ottimizzatore IA
+/test_images/*
+APP_DATA/test_images/*
+!APP_DATA/test_images/scan_batch_20261024_105521_page01.jpg
+!APP_DATA/test_images/scan_batch_20261031_100552_page01.jpg
+!APP_DATA/test_images/00_Originale_Nessuna_Modifica.jpg
+!APP_DATA/test_images/00_Originale_Nuova_Scansione.jpg
+
+# File temporanei di Microsoft Excel
+~$*.xls
+~$*.xlsx
+~$*.xlsm
+
+# Cache Python e ambienti virtuali
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# File di sistema
+.DS_Store
+Thumbs.db

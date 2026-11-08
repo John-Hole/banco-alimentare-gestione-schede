@@ -7,7 +7,7 @@
   "fallback_to_openrouter": true,
   "openrouter_api_key": "",
   "openrouter_api_key_2": "",
-  "openrouter_model": "google/gemini-2.5-flash",
+  "openrouter_model": "openai/gpt-6-luna",
   "last_excel_path": "",
   "last_colletta_folder": "",
   "storico_folder": "",
@@ -27,9 +27,12 @@
   "scanner_dpi": 200,
   "scanner_auto_optimize": true,
   "auto_preset_assignment": false,
-  "openrouter_buffer_model": "google/gemini-2.5-flash",
+  "image_brightness": 1.0,
+  "image_contrast": 1.0,
+  "image_sharpness": 1.0,
+  "openrouter_buffer_model": "openai/gpt-6-luna",
   "openrouter_free_model": "nvidia/nemotron-3.5-super-vl:free",
-  "openrouter_arbitrator_model": "anthropic/claude-sonnet-5.5",
+  "openrouter_arbitrator_model": "anthropic/claude-haiku-5.5",
   "enable_auto_arbitrator": false,
   "swap_panels": false
 }

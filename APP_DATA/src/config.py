@@ -145,6 +145,26 @@ DEFAULT_CASCADE_HAIKU_MODEL = "anthropic/claude-haiku-5.5"
 DEFAULT_CASCADE_FREE_MODEL = "nvidia/nemotron-3.5-super-vl:free"
 DEFAULT_CASCADE_ARBITRATOR_MODEL = "anthropic/claude-haiku-5.5"
 
+# Modelli selezionabili per l'Arbitro Matematico (controllo discrepanze quadrature)
+SUPPORTED_ARBITRATOR_MODELS: List[str] = [
+    "anthropic/claude-haiku-5.5",
+    "openai/gpt-6-luna",
+    "anthropic/claude-sonnet-5.5",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "nvidia/nemotron-3.5-super-vl:free",
+]
+
+ARBITRATOR_DISPLAY_MAP: Dict[str, str] = {
+    "anthropic/claude-haiku-5.5": "🦅 Claude Haiku 5.5 (Low Reasoning) (~$0.0025 — Consigliato)",
+    "openai/gpt-6-luna": "🌙 GPT-6 Luna (Low Reasoning) (~$0.0016)",
+    "anthropic/claude-sonnet-5.5": "🧠 Claude Sonnet 5.5 (~$0.0350 — Massima Precisione)",
+    "gemini-3.5-flash-lite": "🆓 Gemini 3.5 Flash-Lite (Google Diretto — Gratis)",
+    "gemini-3.8-flash": "✨ Gemini 3.8 Flash (Google Diretto — Gratis)",
+    "nvidia/nemotron-3.5-super-vl:free": "🆓 Nemotron 3.5 Super-VL (OpenRouter Free — Gratis)",
+}
+ARBITRATOR_INV_MAP: Dict[str, str] = {v: k for k, v in ARBITRATOR_DISPLAY_MAP.items()}
+
 # Provider selezionabili (Menu a tendina ordinato)
 SUPPORTED_PROVIDERS: List[str] = [
     "cascade",
@@ -165,6 +185,9 @@ DEFAULT_SCANNER_OPTIONS: Dict[str, Any] = {
     "scanner_dpi": 200,
     "scanner_auto_optimize": True,
     "auto_preset_assignment": False,   # Default False: usa P0 (standard senza modifiche); True: auto-detect P1..P5
+    "image_brightness": 1.0,           # Luminosità taratura (0.50 - 1.50, default 1.0 = 0%)
+    "image_contrast": 1.0,             # Contrasto taratura (0.50 - 2.50, default 1.0)
+    "image_sharpness": 1.0,            # Nitidezza taratura (0.50 - 3.00, default 1.0)
 }
 
 
@@ -244,7 +267,8 @@ def load_app_config() -> Dict[str, Any]:
         "openrouter_buffer_model": DEFAULT_CASCADE_BUFFER_MODEL,
         "openrouter_free_model": DEFAULT_CASCADE_FREE_MODEL,
         "openrouter_arbitrator_model": DEFAULT_CASCADE_ARBITRATOR_MODEL,
-        "enable_auto_arbitrator": False,
+        "cascade_arbitrator_model": DEFAULT_CASCADE_ARBITRATOR_MODEL,
+        "enable_auto_arbitrator": True,
         "swap_panels": False,
     }
     if CONFIG_FILE.exists():
@@ -303,26 +327,26 @@ def get_pipeline_status(cfg: Dict[str, Any]) -> Dict[str, Any]:
         daily_cap = 0
         rpm_cap = 0
 
-    # Piano B: OpenRouter Buffer
+    # Piano B: OpenRouter Buffer (GPT-6 Luna)
     if or_key:
         phase_b_status = "green"
-        phase_b_desc = "Attivo · Gemini 2.5 Flash (~0,09 c€/scheda, illimitato)"
+        phase_b_desc = "Attivo · GPT-6 Luna Low (~0,16 c€/scheda)"
     else:
         phase_b_status = "red"
         phase_b_desc = "Disattivato · Richiede OpenRouter API Key"
 
-    # Piano C: OpenRouter Free Parachute
+    # Piano C: OpenRouter Fallback (Claude Haiku 5.5) + Paracadute Nemotron
     if or_key:
         phase_c_status = "green"
-        phase_c_desc = "Attivo · Nemotron 3.5 Super-VL (100% Free di riserva)"
+        phase_c_desc = "Attivo · Claude Haiku 5.5 Low (~0,25 c€) + Nemotron Free"
     else:
         phase_c_status = "red"
         phase_c_desc = "Disattivato · Richiede OpenRouter API Key"
 
-    # Piano D: Arbitro Sonnet 5.5 (Solo su richiesta manuale Shift+Click / Ctrl+Shift+R)
+    # Piano D: Arbitro Matematico Haiku 5.5 & Sonnet 5.5 Manuale
     if or_key:
         phase_d_status = "amber"
-        phase_d_desc = "Solo su richiesta: Shift+Click su 'Rianalizza IA' o Ctrl+Shift+R (~0,04 €/scheda)"
+        phase_d_desc = "Arbitro Haiku 5.5 attivo · Sonnet 5.5 solo con Shift+Click / Ctrl+Shift+R"
     else:
         phase_d_status = "red"
         phase_d_desc = "Disattivato · Richiede OpenRouter API Key"

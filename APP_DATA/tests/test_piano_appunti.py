@@ -142,8 +142,8 @@ class TestPianoAppuntiEOttimizzazioni(unittest.TestCase):
         self.assertEqual(pasta_vals[3], "✓")
 
     def test_all_boxes_confirmed_confirms_category(self):
-        """Verifica che quando tutte le scatole figlie sono confermate, la categoria madre
-        mostri automaticamente ✓ nella colonna Stato."""
+        """Verifica che quando tutte le scatole figlie sono confermate e la somma coincide,
+        la categoria madre mostri automaticamente ✓ nella colonna Stato."""
         pasta_boxes = [b for b in self.app.current_processed_card.righe_scatole if b.categoria == "Pasta"]
         self.assertEqual(len(pasta_boxes), 2)
 
@@ -153,8 +153,18 @@ class TestPianoAppuntiEOttimizzazioni(unittest.TestCase):
         pasta_vals = self.app.tree.item("Pasta", "values")
         self.assertEqual(pasta_vals[3], "✗")
 
-        # Conferma anche la seconda scatola
+        # Conferma anche la seconda scatola, ma con somma discordante (22 vs 30 kg dichiarati):
+        # la categoria rimane ✗ come richiesto dalla regola di quadratura
         pasta_boxes[1].confermata = True
+        self.app._populate_categories_table(self.app.current_processed_card)
+        pasta_vals = self.app.tree.item("Pasta", "values")
+        self.assertEqual(pasta_vals[3], "✗")
+
+        # Quando la somma coincide con il dichiarato (es. seconda scatola a 20.0 kg per totale 30.0 kg):
+        pasta_boxes[1].kg = 20.0
+        cat_data = self.app.current_processed_card.categorie.get("Pasta")
+        if cat_data:
+            cat_data.kg_calcolati = 30.0
         self.app._populate_categories_table(self.app.current_processed_card)
         pasta_vals = self.app.tree.item("Pasta", "values")
         self.assertEqual(pasta_vals[3], "✓")

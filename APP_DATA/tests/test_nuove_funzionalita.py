@@ -315,6 +315,30 @@ class TestV4UIEnhancements(unittest.TestCase):
         self.app._cancel_active_extraction()
         self.assertGreater(self.app._extraction_generation_id, curr_gen)
 
+    def test_provider_change_does_not_auto_reprocess_open_ready_item(self):
+        """Verifica che cambiare modello nel dropdown con una scheda aperta (ready) non avvii la rianalisi immediata."""
+        from unittest.mock import MagicMock, patch
+        from src.models import ProcessedCard, RawCardExtraction, BoxItem
+        from src.ui.app import BatchItem
+
+        fake_item = BatchItem(
+            image_path="test_img.jpg",
+            status="ready",
+            card=ProcessedCard(supermercato="TEST SHOP", righe_scatole=[BoxItem(categoria="Pasta", numero_scatole=2, kg=10.0)])
+        )
+        self.app.queue = [fake_item]
+        self.app.queue_index = 0
+
+        with patch.object(self.app, "_on_reprocess_image") as mock_reprocess:
+            self.app._on_provider_change(BancoAlimentareAppV3.PROVIDER_DISPLAY_HAIKU_LOW)
+            
+            # Non deve essere invocata la rianalisi automatica
+            mock_reprocess.assert_not_called()
+            # Lo stato dell'item deve rimanere invariato e la card intatta
+            self.assertEqual(fake_item.status, "ready")
+            self.assertIsNotNone(fake_item.card)
+            self.assertEqual(self.app.config_data["active_provider"], "or_haiku_low")
+
 
 if __name__ == "__main__":
     unittest.main()

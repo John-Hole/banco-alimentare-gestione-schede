@@ -86,8 +86,11 @@ class TestFeederEmptyHandling(unittest.TestCase):
         self.test_dir = tempfile.mkdtemp()
         ScannerService._device_id = None
         ScannerService._last_known_ip = None
+        self._patch_archive = patch("src.services.history_service.HistoryService.archive_raw_scan")
+        self.mock_archive = self._patch_archive.start()
 
     def tearDown(self):
+        self._patch_archive.stop()
         ScannerService._device_id = None
         ScannerService._last_known_ip = None
         shutil.rmtree(self.test_dir, ignore_errors=True)

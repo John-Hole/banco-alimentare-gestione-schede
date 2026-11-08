@@ -377,6 +377,93 @@ class TestV3BoxConfirmationAndDeskew(unittest.TestCase):
             shutil.rmtree(tdir, ignore_errors=True)
 
 
+    def test_box_edit_does_not_verify_category_if_sum_mismatches(self):
+        """Modificare una scatola verifica solo quella scatola e non l'intera categoria se il totale non torna."""
+        cat_data = self.app.current_processed_card.categorie["Pasta"]
+        cat_data.kg_dichiarati = 25.0
+        cat_data.scatole_dichiarate = 2
+        cat_data.confermata = False
+        
+        # Scatole attuali: 10.0 + 12.0 = 22.0 kg != 25.0 kg
+        recomputed = CardValidator.recompute_from_categories(self.app.current_processed_card)
+        self.app.current_processed_card = recomputed
+        self.app._populate_categories_table(recomputed)
+        
+        # Simula modifica inline della prima scatola a 11.0 kg (totale = 23.0 != 25.0)
+        self.app._editing_info = {
+            "item_id": "Pasta__box__0",
+            "col": "#2",
+            "orig_val": "10.0",
+            "is_cat_row": False,
+            "is_box_row": True
+        }
+        mock_entry = MagicMock()
+        mock_entry.get.return_value = "11.0"
+        self.app._inline_entry = mock_entry
+        
+        self.app._commit_inline_cell_edit()
+        
+        pasta_cat = self.app.current_processed_card.categorie["Pasta"]
+        box0 = self.app.current_processed_card.righe_scatole[0]
+        self.assertEqual(box0.kg, 11.0)
+        self.assertTrue(box0.confermata)
+        # La categoria NON deve essere confermata perché 23.0 != 25.0
+        self.assertFalse(pasta_cat.confermata)
+        self.assertEqual(self.app.tree.item("Pasta", "values")[3], "✗")
+
+    def test_box_edit_auto_verifies_category_when_sum_matches(self):
+        """Modificare una scatola in modo che il totale coincida col dichiarato verifica automaticamente tutta la categoria."""
+        cat_data = self.app.current_processed_card.categorie["Pasta"]
+        cat_data.kg_dichiarati = 25.0
+        cat_data.scatole_dichiarate = 2
+        cat_data.confermata = False
+        
+        # Scatole attuali: 10.0 + 12.0 = 22.0 kg
+        recomputed = CardValidator.recompute_from_categories(self.app.current_processed_card)
+        self.app.current_processed_card = recomputed
+        
+        # Modifica la prima scatola da 10.0 a 13.0 kg -> Totale = 13.0 + 12.0 = 25.0 kg (coincide con dichiarato!)
+        self.app._editing_info = {
+            "item_id": "Pasta__box__0",
+            "col": "#2",
+            "orig_val": "10.0",
+            "is_cat_row": False,
+            "is_box_row": True
+        }
+        mock_entry = MagicMock()
+        mock_entry.get.return_value = "13.0"
+        self.app._inline_entry = mock_entry
+        
+        self.app._commit_inline_cell_edit()
+        
+        pasta_cat = self.app.current_processed_card.categorie["Pasta"]
+        box0 = self.app.current_processed_card.righe_scatole[0]
+        box1 = self.app.current_processed_card.righe_scatole[1]
+        self.assertEqual(box0.kg, 13.0)
+        self.assertTrue(box0.confermata)
+        self.assertTrue(box1.confermata)
+        # La categoria DEVE essere verificata automaticamente
+        self.assertTrue(pasta_cat.confermata)
+        self.assertEqual(self.app.tree.item("Pasta", "values")[3], "✓")
+
+    def test_streaming_pipeline_page_enqueued_and_extraction_triggered(self):
+        """Verifica che durante la scansione ADF lo streaming inserisca la pagina e avvii l'IA in parallelo."""
+        tdir = tempfile.mkdtemp()
+        try:
+            p1 = Path(tdir) / "stream_page1.jpg"
+            img = Image.new("RGB", (200, 200), (255, 255, 255))
+            img.save(str(p1), format="JPEG")
+            
+            with patch.object(self.app, "_process_next_pending") as mock_proc:
+                self.app._extracting = False
+                self.app._on_streamed_page_acquired(p1)
+                
+                self.assertEqual(len(self.app.batch_items), 1)
+                self.assertEqual(self.app.batch_items[0].image_path, str(p1))
+                mock_proc.assert_called_once()
+        finally:
+            shutil.rmtree(tdir, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()
 

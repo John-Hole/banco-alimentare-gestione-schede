@@ -98,14 +98,26 @@ class CardValidator:
         if raw.totali_dichiarati and raw.totali_dichiarati.per_categoria:
             for cat_name, val in raw.totali_dichiarati.per_categoria.items():
                 if cat_name in cat_details:
-                    if "kg" in val and val["kg"] is not None:
+                    declared_kg = None
+                    declared_scat = None
+                    if isinstance(val, dict):
+                        declared_kg = val.get("kg")
+                        declared_scat = val.get("scatole")
+                    elif isinstance(val, (int, float)):
+                        declared_kg = float(val)
+                    elif isinstance(val, str):
                         try:
-                            cat_details[cat_name].kg_dichiarati = round(float(val["kg"]), 2)
+                            declared_kg = float(val.replace(",", "."))
                         except (ValueError, TypeError):
                             pass
-                    if "scatole" in val and val["scatole"] is not None:
+                    if declared_kg is not None:
                         try:
-                            cat_details[cat_name].scatole_dichiarate = int(val["scatole"])
+                            cat_details[cat_name].kg_dichiarati = round(float(declared_kg), 2)
+                        except (ValueError, TypeError):
+                            pass
+                    if declared_scat is not None:
+                        try:
+                            cat_details[cat_name].scatole_dichiarate = int(declared_scat)
                         except (ValueError, TypeError):
                             pass
 

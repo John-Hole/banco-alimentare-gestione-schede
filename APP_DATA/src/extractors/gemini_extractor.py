@@ -4,7 +4,7 @@ import base64
 import mimetypes
 from pathlib import Path
 import time
-from typing import Optional, Tuple, Dict, Any
+from typing import Callable, Optional, Tuple, Dict, Any
 import requests
 
 from .base import BaseVisionExtractor, EXTRACTION_SYSTEM_PROMPT
@@ -117,13 +117,13 @@ class GeminiVisionExtractor(BaseVisionExtractor):
                 "response_schema": GEMINI_RESPONSE_SCHEMA,
                 "temperature": 0.0,
                 "maxOutputTokens": 4096,
-                "thinkingConfig": {"thinkingBudget": 512}
+                "thinkingConfig": {"thinkingBudget": 1024}
             }
         }
 
         t0 = time.time()
         try:
-            resp = requests.post(url, json=payload, timeout=(8, 32))
+            resp = requests.post(url, json=payload, timeout=(5, 15))
             duration = time.time() - t0
             if resp.status_code != 200:
                 self.session_logger.log_ai_result("Google Gemini", "Google", model_name, resp.status_code, duration, is_success=False, error_msg=resp.text[:300])
@@ -141,7 +141,7 @@ class GeminiVisionExtractor(BaseVisionExtractor):
             self.session_logger.log_ai_result("Google Gemini", "Google", model_name, 500, duration, is_success=False, error_msg=str(e))
             return 500, {}, f"Eccezione di rete Gemini: {e}", duration
 
-    def extract_from_image(self, image_path: str, _is_retry_after_rotation: bool = False) -> RawCardExtraction:
+    def extract_from_image(self, image_path: str, _is_retry_after_rotation: bool = False, status_callback: Optional[Callable[[str], None]] = None) -> RawCardExtraction:
         if not self.api_key:
             if self.fallback_extractor:
                 return self.fallback_extractor.extract_from_image(image_path)
@@ -211,6 +211,8 @@ class GeminiVisionExtractor(BaseVisionExtractor):
                     )
 
         # 1. Tentativo con il modello primario sulla chiave principale
+        if status_callback:
+            status_callback(f"📡 Invio richiesta a Google Gemini ({self.model})...")
         status_code, result_json, err_text, duration = self._execute_gemini_call(
             self.api_key, self.model, img_data, mime_type
         )
@@ -233,22 +235,27 @@ class GeminiVisionExtractor(BaseVisionExtractor):
 
             text_content = self._extract_text_from_candidates(candidates)
             card = self.parse_json_response(text_content)
-            card.tempo_elaborazione_sec = round(duration, 1)
-            card.costo_usd = 0.0
-            if card.scheda_capovolta and not _is_retry_after_rotation:
+            if not self.is_valid_raw_extraction(card):
                 self.session_logger.logger.warning(
-                    f"[Gemini] Scheda rilevata capovolta (180°): rotazione fisica su disco e ri-analisi immediata."
+                    f"[Gemini] Risposta o JSON non valido da {self.primary_label}: {card.note_o_anomalie}. Avvio failover/fallback..."
                 )
-                try:
-                    from ..scanner.scanner_service import ScannerService
-                    ScannerService.rotate_image_file_180(image_path)
-                    return self.extract_from_image(image_path, _is_retry_after_rotation=True)
-                except Exception as e:
-                    self.session_logger.logger.error(f"[Gemini] Errore rotazione 180° e re-analisi: {e}")
-            badge = f"[Google Gemini ({self.model}) | {duration:.1f}s | Gratis]"
-            if badge not in (card.note_o_anomalie or ""):
-                card.note_o_anomalie = f"{badge} {card.note_o_anomalie or ''}".strip()
-            return card
+            else:
+                card.tempo_elaborazione_sec = round(duration, 1)
+                card.costo_usd = 0.0
+                if card.scheda_capovolta and not _is_retry_after_rotation:
+                    self.session_logger.logger.warning(
+                        f"[Gemini] Scheda rilevata capovolta (180°): rotazione fisica su disco e ri-analisi immediata."
+                    )
+                    try:
+                        from ..scanner.scanner_service import ScannerService
+                        ScannerService.rotate_image_file_180(image_path)
+                        return self.extract_from_image(image_path, _is_retry_after_rotation=True)
+                    except Exception as e:
+                        self.session_logger.logger.error(f"[Gemini] Errore rotazione 180° e re-analisi: {e}")
+                badge = f"[Google Gemini ({self.model}) | {duration:.1f}s | Gratis]"
+                if badge not in (card.note_o_anomalie or ""):
+                    card.note_o_anomalie = f"{badge} {card.note_o_anomalie or ''}".strip()
+                return card
 
         # 2. Se fallisce con codice 429 o errore
         self.tracker.record_call(
@@ -287,11 +294,16 @@ class GeminiVisionExtractor(BaseVisionExtractor):
                 if candidates:
                     text_content = self._extract_text_from_candidates(candidates)
                     card = self.parse_json_response(text_content)
-                    card.tempo_elaborazione_sec = round(fb_dur, 1)
-                    card.costo_usd = 0.0
-                    fallback_msg = f"[Failover {self.backup_label}] [Google Gemini ({self.model}) | {fb_dur:.1f}s | Gratis]: Quota esaurita su {self.primary_label}."
-                    card.note_o_anomalie = f"{fallback_msg} {card.note_o_anomalie or ''}".strip()
-                    return card
+                    if self.is_valid_raw_extraction(card):
+                        card.tempo_elaborazione_sec = round(fb_dur, 1)
+                        card.costo_usd = 0.0
+                        fallback_msg = f"[Failover {self.backup_label}] [Google Gemini ({self.model}) | {fb_dur:.1f}s | Gratis]: Quota esaurita su {self.primary_label}."
+                        card.note_o_anomalie = f"{fallback_msg} {card.note_o_anomalie or ''}".strip()
+                        return card
+                    else:
+                        self.session_logger.logger.warning(
+                            f"[Gemini] Risposta o JSON non valido da {self.backup_label}: {card.note_o_anomalie}."
+                        )
             else:
                 self.tracker.record_call(
                     provider=back_provider,

@@ -3,7 +3,7 @@
 import json
 import re
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Callable, Optional
 
 from ..models import RawCardExtraction, DeclaredTotals, BoxItem
 from ..config import CATEGORIES, normalize_category_name
@@ -17,6 +17,7 @@ STRUTTURA DEL DOCUMENTO:
 
 1. INTESTAZIONE:
    - Supermercato: nome, città e indirizzo del punto vendita (stampato o timbrato, es. "TIGRE - PERUGIA STRADA PONTE D'ODDI, 8/A").
+     * REGOLA TASSATIVA: Riporta SEMPRE il testo del supermercato ESCLUSIVAMENTE nella chiave JSON "supermercato" (MAI e POI MAI in "note_o_anomalie" o altrove)! Se il riquadro è leggibile, "supermercato" DEVE contenere la stringa non-nulla. Se non presente o illeggibile: null.
    - Scheda N°: casella in alto a destra. Riporta il codice sintetico pulito scritto a mano (es. "1", "2", "3", "1-BIS").
      * Estrai unicamente il codice sintetico pulito:
        - "Viaggio 1" o "N. 1" o "1°" -> "1"
@@ -58,50 +59,59 @@ STRUTTURA DEL DOCUMENTO:
 
    - COLONNA 4 (OLIO) vs COLONNA 5 (PELATI):
      OLIO (Colonna 4) è subito a destra di TONNO (Colonna 3); PELATI E SUGHI (Colonna 5) è tra OLIO (Colonna 4) e LEGUMI (Colonna 6).
-     Controlla tutte le righe da 1a a 10a mantenendo ciascun valore rigorosamente nel proprio corridoio verticale delimitato dalle linee continue (in particolare verifica tutte le righe compilate 1a, 2a, 3a, 4a...).
-     * ATTENZIONE CRITICA A OLIO RIGA 1a vs RIGA 2a: Se nella colonna OLIO le prime due righe (`1a` e `2a`) ti sembrano a prima vista due '2' consecutivi (es. sopra `5` in 3a e `7` in 4a), NON sono due '2': la cifra in riga `1a` (più inclinata a destra con base orizzontale lunga) è TASSATIVAMENTE un **'1' scritto a mano con grazia iniziale e base piatta (`1.0` kg)**, mentre solo la riga `2a` è un **'2' (`2.0` kg)**! È severamente vietato estrarre `[2.0, 2.0, ...]` in OLIO: devi SEMPRE estrarre `{"riga": "1a", "kg": 1.0}` e `{"riga": "2a", "kg": 2.0}` (seguiti da `3a`: `5.0`, `4a`: `7.0`)!
+     Controlla tutte le righe compilate da 1a a 10a mantenendo ciascun valore rigorosamente nel proprio corridoio verticale delimitato dalle linee continue. Non fermarti alle prime righe: se ci sono scatole scritte anche nelle righe 3a, 4a o successive, estraile tutte accuratamente.
 
    - COLONNA 7 (PASTA):
-     Verifica attentamente tutte le righe compilate da 1a a 5a: un '8' tracciato con due anelli/asole (es. in riga 2a sotto il '5' della riga 1a) è `8.0` kg, e un '7' tagliato a metà dal trattino orizzontale mediano senza base inferiore (es. in riga 3a) è `7.0` kg!
+     Verifica attentamente tutte le righe compilate da 1a a 10a. Non scambiare un '9' iniziale per un '3', né un '8' per un '5'.
 
    - REGOLA GENERALE PER LE COLONNE VUOTE:
      Se una colonna non ha numeri scritti dal compilatore nelle righe da 1a a 10a, restituisci sempre "scatole": []. È severamente vietato spostare o duplicare cifre verso colonne adiacenti vuote.
 
 4. REGOLE RIGIDE SUI VALORI NELLE CELLE ED ERRORI CALLIGRAFICI:
    - CIFRE CANCELLATE O SBARRATE A PENNA E CORREZIONI NELLA STESSA CELLA:
-     * REGOLA PRIORITARIA (CORREZIONE ACCANTO A SCARABOCCHIO, es. Riso riga 1a): Se in una casella (come in Riso riga 1a) c'è una macchia/scarabocchio a penna a destra ma nella stessa casella a sinistra (o sotto) si vede una cifra (es. `7`), la casella NON è annullata: DEVI SEMPRE ESTRARRE quella cifra valida (es. `{"riga": "1a", "kg": 7.0}`) nell'array `scatole` e annotare la correzione in `note_o_anomalie`! È vietato escludere la riga 1a di Riso quando il `7` è visibile accanto allo scarabocchio!
+     * REGOLA PRIORITARIA (CORREZIONE ACCANTO A SCARABOCCHIO): Se in una casella c'è una macchia/scarabocchio a penna a destra ma nella stessa casella a sinistra (o sotto) si vede una cifra valida (es. `7`), la casella NON è annullata: DEVI SEMPRE ESTRARRE quella cifra valida nell'array `scatole` e annotare la correzione in `note_o_anomalie`!
      * Escludi una casella SOLO quando contiene unicamente uno scarabocchio indecifrabile senza alcuna cifra leggibile accanto.
    - TRATTINI, BARRE, ZERI E CROCI IN CELLE VUOTE:
-     Trattini ("-"), barre ("/"), zeri ("0") o croci ("X") usati per indicare assenza di scatole indicano cella VUOTA: NON inserire alcuna scatola con peso 0.0 kg.
+     Trattini isolati ("-"), barre ("/"), zeri ("0") o croci isolate ("X") usati per indicare assenza di scatole indicano cella VUOTA: NON inserire alcuna scatola con peso 0.0 kg.
+     ATTENZIONE: NON confondere la cifra '7' barrata con una croce di cella vuota (vedi sotto la regola del 7).
    - ESPRESSIONI MATEMATICHE NELLE CASELLE:
      Se un volontario scrive un'operazione (es. "2x5", "5+5", "3*4"), risolvi l'operazione calcolando il valore in kg (es. 10.0, 12.0) e annotala in "note_o_anomalie".
    - UNITÀ DI MISURA ESPLICITE (KG / GRAMMI):
      Se i pesi sono indicati in grammi (es. "500 gr", "250g"), convertili in kg (0.5, 0.25).
    - FRECCE E CORREZIONI A MARGINE:
      Se un numero è scritto a margine con freccia verso una casella, assegnalo alla casella bersaglio e segnalalo nelle note.
-   - SELF-CHECK DI COERENZA E RICONCILIAZIONE MATEMATICA CON I TOTALI DI FONDO:
-     Se in fondo a una qualsiasi colonna è compilata la riga 'TOTALE KG' (o 'TOT. N° SCATOLE') e la somma aritmetica delle singole scatole identificate differisce dal totale dichiarato dal compilatore:
-     * Verifica attentamente se la discrepanza deriva da una o più cifre calligraficamente ambigue (ad esempio una cifra incerta tra '9', '5' o '3', oppure tra '1' e '2').
-     * Se una delle interpretazioni morfologicamente plausibili rende la somma dei kg ESATTAMENTE uguale al totale dichiarato a fondo colonna, privilegia l'interpretazione coerente con il totale (senza inventare numeri inesistenti).
-     * Se invece anche dopo l'attenta verifica le cifre nelle caselle sono inequivocabili e la somma è oggettivamente diversa dal totale scritto dal volontario, estrai i valori effettivi delle scatole e segnala la discrepanza matematica nelle 'note_o_anomalie'.
+
    - MANUALE CALLIGRAFICO ITALIANO (CONFRONTO INTRA-SCHEDA):
-     Prima di classificare una cifra dubbia, confrontala sempre con le altre cifre (1, 2, 4, 7, 9, 10) scritte dalla stessa mano nella stessa scheda!
+     Prima di classificare una cifra dubbia, confrontala sempre con le altre cifre scritte dalla stessa mano nella stessa scheda!
+     * DISTINZIONE TRA '7' MANOSCRITTO ITALIANO E CANCELLATURE/CROCI (REGOLA DEL '7' BARRATO):
+       - ATTENZIONE CRITICA: In Italia la cifra '7' manoscritta presenta quasi SEMPRE una barra orizzontale in cima, un'asta discendente obliqua e un TRATTINO ORIZZONTALE A METÀ ASTA (spesso simile a una crocetta con uncino superiore).
+       - TASSATIVO: Un segno con barra superiore e trattino mediano NON È UNA CROCETTA, NON È UNA BARRA DI CANCELLATURA, NON È UN TRATTINO VUOTO! È al 100% la cifra '7' (`7.0` kg)!
+       - È severamente vietato escludere o saltare una casella che contiene un '7' con trattino mediano: deve SEMPRE essere estratta nell'array 'scatole'!
      * DISTINZIONE TRA '1' e '2' (REGOLA DELLA BASE ORIZZONTALE E DEL VERTICE SUPERIORE):
-       - ATTENZIONE CRITICA: In Italia la cifra '1' isolata (1.0 kg) viene spesso scritta a mano con una grazia/uncino iniziale in alto a sinistra, un'asta centrale che scende inclinata verso il basso a destra (`\`) o dritta (`|`), e una lunga base orizzontale piatta (`_`) in fondo. Dopo la scansione questo '1' con base può apparire visivamente molto simile a un '2' corsivo/slanciato inclinato in avanti (verso destra).
-       - Come distinguere il '1' con base (1.0 kg) dal '2' (2.0 kg):
-         1) Quando nella riga 1a di una colonna (come OLIO) vedi una cifra slanciata e inclinata verso destra con base orizzontale lunga, e subito sotto nella riga 2a vedi un '2' più compatto, ordinato e verticale, la cifra in riga 1a è SEMPRE un **'1' (`1.0` kg)** e quella in riga 2a è un **'2' (`2.0` kg)**! Non classificare mai entrambe come 2.0 kg!
-         2) È un '2' (2.0 kg) solo quando il tratto discendente va da in alto a destra verso il basso a sinistra (`/`) o ha la stessa forma compatta e verticale degli altri '2' della scheda (es. in Tonno 3a, Pelati 3a, Legumi 3a).
-         3) Se la cifra è un'asta semplice senza base orizzontale, è sempre '1' (1.0 kg).
-     * DISTINZIONE TRA '9', '5' E '3' (REGOLA MORFOLOGICA DELL'OCCHIELLO CHIUSO VS ARCHI APERTI):
-       - Il '9' presenta SEMPRE e TASSATIVAMENTE un OCCHIELLO SUPERIORE CHIUSO circolare o ovoidale ('o') nella parte alta, da cui scende a destra un'asta verticale o curva. Non ha mai una barra orizzontale aperta in cima.
-       - Il '5' presenta una barra orizzontale netta in cima, un breve stelo verticale a sinistra, e poi una pancia/curva inferiore aperta verso sinistra. NON presenta mai un occhiello chiuso in cima!
-       - Il '3' è composto da due archi/semicerchi aperti verso sinistra. NON presenta mai un occhiello chiuso in cima!
-       - Se nella parte alta della cifra noti un anello/cappello chiuso con gambo discendente a destra, è SEMPRE un **'9' (9.0 kg)**, mai un '5' o un '3'!
-     * DISTINZIONE TRA '9' e '2' / '4' / '7':
-       Il '9' ha un OCCHIELLO CHIUSO circolare/ovale nella parte alta ('o') da cui scende a destra l'asta verticale o curva, senza base orizzontale a destra. Non confondere mai un '9' (9.0 kg) con un '2' o un '7'!
-     * DISTINZIONE TRA '7' e '1': il '7' ha un tratto orizzontale superiore netto da sinistra a destra (e spesso il trattino orizzontale a metà asta); se non c'è barra superiore né mediana, è un '1'.
-     * DISTINZIONE TRA '4' e '2'/'9': il '4' ha l'asta dritta verticale a destra e l'angolo retto aperto in alto a sinistra. Non confonderlo con un '2'!
+       - ATTENZIONE: La cifra '1' isolata (1.0 kg) viene spesso scritta a mano con grazia/uncino iniziale in alto a sinistra, asta centrale e una base orizzontale piatta in fondo.
+       - È un '2' (2.0 kg) solo quando presenta la tipica curvatura/arco superiore da cui scende il tratto verso la base orizzontale.
+       - Se la cifra è un'asta semplice senza base orizzontale, è sempre '1' (1.0 kg).
+     * DISTINZIONE TRA '9', '5' E '3' (REGOLA DELL'OCCHIELLO CHIUSO VS ARCHI APERTI):
+       - Il '9' presenta SEMPRE un OCCHIELLO SUPERIORE CHIUSO circolare o ovoidale ('o') nella parte alta, da cui scende a destra un'asta verticale o curva.
+       - Il '5' presenta una barra orizzontale netta in cima, un breve stelo verticale a sinistra, e una pancia inferiore aperta verso sinistra.
+       - Il '3' è composto da due archi aperti verso sinistra, senza mai anello chiuso in cima.
+       - Se la somma di colonna risulta inferiore al totale dichiarato di 6 kg esatti (es. calcolato 29 vs dichiarato 35), verifica se una cifra interpretata come '3' ha in realtà l'occhiello superiore tipico di un '9' (poiché 9 - 3 = 6 kg)!
      * VIRGOLA DECIMALE: converti numeri con virgola decimale (es. 7,5 o 2,5) nel float standard (es. 7.5, 2.5).
+
+   - PROCEDURA OBBLIGATORIA DI RICONCILIAZIONE A VINCOLI MATEMATICI (RESIDUO E CONTEGGIO SCATOLE):
+     Prima di emettere il JSON finale, per CIASCUNA colonna che ha 'TOTALE KG' e/o 'TOT. N° SCATOLE' compilati a fondo tabella, esegui mentalmente questa verifica a vincoli:
+     1. VINCOLO SCATOLE (CONTEGGIO):
+        Se 'TOT. N° SCATOLE' dichiara N scatole (es. 4 scatole) ma hai identificato solo M scatole (es. 3 scatole con M < N), SIGNIFICA CHE HAI SCARTATO PER ERRORE UNA CASELLA COMPILATA!
+        Riesamina subito le caselle della colonna scartate (in particolare cerca cifre come il '7' con trattino mediano o cifre a matita/tratto sottile) per recuperare la scatola mancante.
+     2. VINCOLO KG (CALCOLO DEL RESIDUO DELTA):
+        Calcola: Delta = (TOTALE KG DICHIARATO) - (SOMMA KG CASELLE IDENTIFICATE).
+        Se Delta > 0:
+        - Se manca 1 scatola e Delta = 7.0 kg, cerca la casella con il '7' barrato che avevi omesso e inseriscila!
+        - Se le scatole coincidono ma Delta = 6.0 kg, verifica se una cifra letta come '3' è in realtà un '9' (9 - 3 = 6).
+     3. QUADRATURA PERFETTA:
+        Quando la somma delle singole caselle coincide esattamente con 'TOTALE KG' e il conteggio con 'TOT. N° SCATOLE', convalida l'estrazione: la verità calligrafica e matematica è perfettamente ricostruita.
+     4. Se invece anche dopo l'attenta verifica la discrepanza resta oggettiva ed evidente, estrai i valori effettivi e segnala la discrepanza nelle 'note_o_anomalie'.
+
    - TOTALI DI CALCE:
      Se in fondo alla colonna sono compilate le righe 'TOTALE KG' o 'TOT. N° SCATOLE', estraile in 'totale_dichiarato_kg' e 'totale_dichiarato_scatole'. Non metterle nell'array 'scatole'.
    - ORIENTAMENTO SCHEDA:
@@ -132,7 +142,7 @@ class BaseVisionExtractor(ABC):
     """Classe base astratta per tutti i provider di estrazione visiva."""
 
     @abstractmethod
-    def extract_from_image(self, image_path: str) -> RawCardExtraction:
+    def extract_from_image(self, image_path: str, status_callback: Optional[Callable[[str], None]] = None) -> RawCardExtraction:
         """Estrae i dati dalla foto o scansione della scheda corriere."""
         pass
 
@@ -180,9 +190,127 @@ class BaseVisionExtractor(ABC):
             return True
         return False
 
+    @staticmethod
+    def _repair_json(text: str) -> str:
+        """Applica euristiche di recupero per errori comuni di sintassi JSON generati dagli LLM."""
+        if not text:
+            return text
+        s = text.replace("\r\n", "\n")
+        # 1. Rimuovi commenti // o /* */
+        s = re.sub(r"//.*?\n", "\n", s)
+        s = re.sub(r"/\*.*?\*/", "", s, flags=re.DOTALL)
+        # 2. Python literals -> JSON standard
+        s = re.sub(r"\bNone\b", "null", s)
+        s = re.sub(r"\bTrue\b", "true", s)
+        s = re.sub(r"\bFalse\b", "false", s)
+        # 3. Rimuovi trailing commas prima di } o ]
+        s = re.sub(r",\s*([}\]])", r"\1", s)
+        # 4. Inserisci virgole mancanti tra elementi separati da a capo
+        s = re.sub(r'("|\d|true|false|null|\]|\})\s*\n\s*("|\{|\[)', r"\1,\n\2", s)
+        # 5. Oggetti o liste adiacenti senza virgola: }{ -> },{ e ][ -> ],[
+        s = re.sub(r"\}\s*\{", "},{", s)
+        s = re.sub(r"\]\s*\[", "],[", s)
+        # 6. Rimuovi eventuali trailing commas create dalle sostituzioni precedenti
+        s = re.sub(r",\s*([}\]])", r"\1", s)
+        # 7. Chiusura automatica di parentesi non bilanciate se l'output e' stato troncato
+        open_curlies = s.count("{") - s.count("}")
+        open_brackets = s.count("[") - s.count("]")
+        if open_brackets > 0:
+            s += "]" * open_brackets
+        if open_curlies > 0:
+            s += "}" * open_curlies
+        return s
+
+    @classmethod
+    def _extract_via_regex(cls, text: str) -> Optional[RawCardExtraction]:
+        """Parser euristico di emergenza: estrae scatole e totali anche da JSON gravemente malformato."""
+        if not text:
+            return None
+        supermercato = None
+        m_sup = re.search(r'"supermercato"\s*:\s*"([^"]+)"', text, re.IGNORECASE)
+        if m_sup:
+            supermercato = m_sup.group(1).strip()
+        num_scheda = None
+        m_num = re.search(r'"numero_scheda"\s*:\s*"([^"]+)"', text, re.IGNORECASE)
+        if m_num:
+            num_scheda = m_num.group(1).strip()
+
+        righe: List[BoxItem] = []
+        totali_per_cat: Dict[str, Dict[str, Any]] = {}
+
+        col_blocks = re.split(r'\{\s*"colonna_idx"', text)
+        if len(col_blocks) > 1:
+            for block in col_blocks[1:]:
+                cat_m = re.search(r'"categoria"\s*:\s*"([^"]+)"', block)
+                idx_m = re.search(r'^[\s:]*(\d+)', block)
+                cat = "Varie"
+                if idx_m:
+                    idx_val = int(idx_m.group(1))
+                    if 1 <= idx_val <= len(CATEGORIES):
+                        cat = CATEGORIES[idx_val - 1]["name"]
+                elif cat_m:
+                    cat = normalize_category_name(cat_m.group(1))
+
+                for sc_match in re.finditer(r'\{[^{}]*"kg"\s*:\s*([0-9.]+)[^{}]*\}', block):
+                    try:
+                        kg_val = float(sc_match.group(1))
+                        if kg_val > 0:
+                            righe.append(BoxItem(categoria=cat, kg=kg_val))
+                    except ValueError:
+                        pass
+                tot_kg_m = re.search(r'"totale_dichiarato_kg"\s*:\s*([0-9.]+)', block)
+                tot_sc_m = re.search(r'"totale_dichiarato_scatole"\s*:\s*(\d+)', block)
+                if tot_kg_m or tot_sc_m:
+                    t_kg = float(tot_kg_m.group(1)) if tot_kg_m else None
+                    t_sc = int(tot_sc_m.group(1)) if tot_sc_m else None
+                    totali_per_cat[cat] = {"kg": t_kg, "scatole": t_sc}
+
+        if not righe:
+            for sc_match in re.finditer(r'\{[^{}]*"categoria"\s*:\s*"([^"]+)"[^{}]*"kg"\s*:\s*([0-9.]+)[^{}]*\}', text):
+                c = normalize_category_name(sc_match.group(1))
+                try:
+                    k = float(sc_match.group(2))
+                    if k > 0:
+                        righe.append(BoxItem(categoria=c, kg=k))
+                except ValueError:
+                    pass
+
+        if righe or supermercato or num_scheda:
+            totali = DeclaredTotals(per_categoria=totali_per_cat)
+            return RawCardExtraction(
+                supermercato=supermercato,
+                numero_scheda=num_scheda,
+                righe_scatole=righe,
+                totali_dichiarati=totali,
+                note_o_anomalie="[Recupero euristico da sintassi JSON imperfetta]"
+            )
+        return None
+
+    @classmethod
+    def is_valid_raw_extraction(cls, raw: Optional[RawCardExtraction]) -> bool:
+        """Verifica se l'estrazione ottenuta e' valida o se contiene un errore fatale."""
+        if raw is None:
+            return False
+        if raw.righe_scatole and len(raw.righe_scatole) > 0:
+            return True
+        err_note = (raw.note_o_anomalie or "").lower()
+        fatal_terms = (
+            "impossibile interpretare json",
+            "nessun oggetto json",
+            "risposta vuota",
+            "formato inatteso",
+            "expecting",
+            "jsondecodeerror",
+            "delimiter",
+            "falliti",
+        )
+        if any(term in err_note for term in fatal_terms):
+            return False
+        return True
+
     @classmethod
     def parse_json_response(cls, raw_text: str) -> RawCardExtraction:
-        """Pulisce eventuale markdown e converte il testo JSON in RawCardExtraction."""
+        """Pulisce eventuale markdown e converte il testo JSON in RawCardExtraction con riparazione automatica e fallback euristico."""
         if not raw_text:
             return RawCardExtraction(note_o_anomalie="Risposta vuota dal modello")
 
@@ -190,19 +318,46 @@ class BaseVisionExtractor(ABC):
         cleaned = re.sub(r"^```(?:json)?\s*", "", raw_text.strip(), flags=re.MULTILINE)
         cleaned = re.sub(r"\s*```$", "", cleaned.strip(), flags=re.MULTILINE).strip()
 
+        data = None
+        parse_err = None
+
+        # 1. Tentativo parsing diretto
         try:
             data = json.loads(cleaned)
-        except Exception:
-            # Tenta di trovare il primo blocco tra parentesi graffe
+        except Exception as e:
+            parse_err = e
+
+        # 2. Tentativo blocco {...}
+        if data is None:
             match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
             if match:
                 try:
                     data = json.loads(match.group(0))
                 except Exception as e:
-                    return RawCardExtraction(note_o_anomalie=f"Impossibile interpretare JSON: {e}")
-            else:
-                return RawCardExtraction(note_o_anomalie="Nessun oggetto JSON trovato nella risposta")
+                    parse_err = e
 
+        # 3. Tentativo con riparazione automatica della sintassi (virgole mancanti / trailing / parentesi)
+        if data is None:
+            try:
+                data = json.loads(cls._repair_json(cleaned))
+            except Exception:
+                pass
+
+        # 4. Tentativo riparazione sul blocco regex {...}
+        if data is None:
+            match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(cls._repair_json(match.group(0)))
+                except Exception as e:
+                    parse_err = e
+
+        # 5. Fallback euristico di emergenza (recupera comunque scatole, totali e supermercato)
+        if data is None:
+            recovered = cls._extract_via_regex(cleaned)
+            if recovered and recovered.righe_scatole:
+                return recovered
+            return RawCardExtraction(note_o_anomalie=f"Impossibile interpretare JSON: {parse_err}")
         if not isinstance(data, dict):
             return RawCardExtraction(note_o_anomalie="Risposta del modello in formato inatteso")
 
@@ -278,9 +433,16 @@ class BaseVisionExtractor(ABC):
         per_cat = totali_dict.get("per_categoria")
         if isinstance(per_cat, dict):
             for k, v in per_cat.items():
+                cat_k = normalize_category_name(k)
                 if isinstance(v, dict):
-                    cat_k = normalize_category_name(k)
                     totali_per_cat[cat_k] = v
+                elif isinstance(v, (int, float)):
+                    totali_per_cat[cat_k] = {"kg": float(v)}
+                elif isinstance(v, str):
+                    try:
+                        totali_per_cat[cat_k] = {"kg": float(v.replace(",", "."))}
+                    except (ValueError, TypeError):
+                        pass
 
         try:
             scatole_tot = totali_dict.get("scatole_totale")
@@ -308,11 +470,21 @@ class BaseVisionExtractor(ABC):
         if not num_scheda:
             num_scheda = "NON_PRESENTE"
 
+        supermercato_val = (data.get("supermercato") or "").strip()
+        note_val = data.get("note_o_anomalie") or ""
+        # Defensive fallback: se il supermercato è vuoto, recuperalo se il modello lo ha scritto per errore nelle note
+        if not supermercato_val and note_val:
+            m_sup = re.search(r"supermercato[:\s\-]+([^.\n\[]+)", note_val, flags=re.IGNORECASE)
+            if m_sup:
+                candidate_sup = m_sup.group(1).strip()
+                if len(candidate_sup) >= 3:
+                    supermercato_val = candidate_sup
+
         return RawCardExtraction(
-            supermercato=data.get("supermercato") or "",
+            supermercato=supermercato_val,
             numero_scheda=num_scheda,
             righe_scatole=righe,
             totali_dichiarati=totali,
-            note_o_anomalie=data.get("note_o_anomalie"),
+            note_o_anomalie=note_val or None,
             scheda_capovolta=bool(data.get("scheda_capovolta", False))
         )

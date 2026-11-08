@@ -4,7 +4,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageOps
 
@@ -514,6 +514,110 @@ class ScannerService:
         return ScannerService.resolve_device_id(force_select=True)
 
     @staticmethod
+    def detect_scanners() -> List[Dict[str, Any]]:
+        """Interroga WIA per rilevare tutti gli scanner collegati (USB, Wi-Fi, Ethernet, WSD, eSCL).
+        
+        Ritorna una lista di dizionari con chiavi:
+        - 'id': ID periferica WIA
+        - 'name': Nome descrittivo dello scanner
+        - 'status': 'ready' | 'busy' | 'error'
+        """
+        results: List[Dict[str, Any]] = []
+        com_inited = False
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+            com_inited = True
+        except Exception:
+            pass
+        try:
+            import win32com.client
+            mgr = win32com.client.Dispatch("WIA.DeviceManager")
+            for info in mgr.DeviceInfos:
+                dev_id = str(info.DeviceID)
+                dev_name = "Scanner WIA"
+                try:
+                    dev_name = str(info.Properties("Name").Value)
+                except Exception:
+                    try:
+                        dev_name = str(info.Properties(7).Value)
+                    except Exception:
+                        dev_name = dev_id
+
+                status = "ready"
+                try:
+                    conn = info.Connect()
+                    if conn is None:
+                        status = "busy"
+                except Exception as e:
+                    err_msg = str(e).lower()
+                    if "busy" in err_msg or "occupato" in err_msg or "0x80210006" in err_msg:
+                        status = "busy"
+                    else:
+                        status = "busy"
+                results.append({"id": dev_id, "name": dev_name, "status": status})
+        except Exception as e:
+            try:
+                get_session_logger().logger.warning(f"Rilevamento scanner WIA: {e}")
+            except Exception:
+                pass
+        finally:
+            if com_inited:
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
+        return results
+
+    @staticmethod
+    def get_scanner_status() -> Dict[str, Any]:
+        """Restituisce lo stato sintetico dello scanner principale o rilevato."""
+        scanners = ScannerService.detect_scanners()
+        if not scanners:
+            return {"status": "none", "name": "Nessuno scanner", "text": "🔴 Nessuno scanner rilevato"}
+        
+        cur = None
+        if ScannerService._device_id:
+            for s in scanners:
+                if s["id"] == ScannerService._device_id:
+                    cur = s
+                    break
+        if not cur:
+            cur = scanners[0]
+            ScannerService._device_id = cur["id"]
+
+        if cur["status"] == "ready":
+            return {"status": "ready", "name": cur["name"], "text": f"🟢 Pronto: {cur['name']}"}
+        elif cur["status"] == "busy":
+            return {"status": "busy", "name": cur["name"], "text": f"🟡 Occupato: {cur['name']}"}
+        else:
+            return {"status": "error", "name": cur["name"], "text": f"🔴 Errore: {cur['name']}"}
+
+    @staticmethod
+    def apply_image_tuning(
+        image: Union[Path, Image.Image],
+        brightness: float = 1.0,
+        contrast: float = 1.0,
+        sharpness: float = 1.0,
+    ) -> Image.Image:
+        """Applica le regolazioni di taratura (luminosità, contrasto, nitidezza) a un'immagine PIL."""
+        from PIL import ImageEnhance
+        if isinstance(image, (str, Path)):
+            img = Image.open(image).convert("RGB")
+        else:
+            img = image.copy()
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+
+        if abs(brightness - 1.0) > 0.01:
+            img = ImageEnhance.Brightness(img).enhance(float(brightness))
+        if abs(contrast - 1.0) > 0.01:
+            img = ImageEnhance.Contrast(img).enhance(float(contrast))
+        if abs(sharpness - 1.0) > 0.01:
+            img = ImageEnhance.Sharpness(img).enhance(float(sharpness))
+        return img
+
+    @staticmethod
     def _connect(device_id: str):
         import win32com.client
         mgr = win32com.client.Dispatch("WIA.DeviceManager")
@@ -524,10 +628,64 @@ class ScannerService:
         raise ConnectionError("Lo scanner selezionato non è più disponibile. Verificare che sia acceso e collegato.")
 
     @staticmethod
+    def apply_tuning_to_file(
+        path: Union[str, Path],
+        brightness: Optional[float] = None,
+        contrast: Optional[float] = None,
+        sharpness: Optional[float] = None,
+    ) -> Path:
+        """Applica la taratura specificata direttamente a un file immagine su disco.
+        Preserva l'originale grezzo in .raw.jpg se non ancora presente per evitare accumuli di contrasto.
+        """
+        target = Path(path)
+        if not target.exists():
+            return target
+
+        if brightness is None or contrast is None or sharpness is None:
+            try:
+                from ..config import load_app_config
+                cfg = load_app_config()
+                b = float(cfg.get("image_brightness", 1.0)) if brightness is None else brightness
+                c = float(cfg.get("image_contrast", 1.0)) if contrast is None else contrast
+                s = float(cfg.get("image_sharpness", 1.0)) if sharpness is None else sharpness
+            except Exception:
+                b, c, s = 1.0, 1.0, 1.0
+        else:
+            b, c, s = brightness, contrast, sharpness
+
+        raw_backup = target.with_suffix(".raw.jpg")
+        if not raw_backup.exists():
+            try:
+                import shutil
+                shutil.copy2(target, raw_backup)
+            except Exception:
+                pass
+
+        source_file = raw_backup if raw_backup.exists() else target
+        try:
+            with Image.open(source_file) as img:
+                img.load()
+                tuned = ScannerService.apply_image_tuning(img, brightness=b, contrast=c, sharpness=s)
+                rgb = tuned.convert("RGB") if tuned.mode != "RGB" else tuned
+                rgb.save(str(target), format="JPEG", quality=95)
+        except Exception as e:
+            print(f"Avviso apply_tuning_to_file per {target}: {e}")
+        return target
+
+    @staticmethod
     def _finalize_scan(path: Path, optimize: bool) -> Path:
         """Pipeline post-acquisizione: ottimizzazione completa oppure semplice normalizzazione JPEG."""
+        try:
+            from ..config import load_app_config
+            cfg = load_app_config()
+            b = float(cfg.get("image_brightness", 1.0))
+            c = float(cfg.get("image_contrast", 1.0))
+            s = float(cfg.get("image_sharpness", 1.0))
+        except Exception:
+            b, c, s = 1.0, 1.0, 1.0
+
         if optimize:
-            return ScannerService.auto_optimize_scan(path)
+            return ScannerService.auto_optimize_scan(path, brightness=b, contrast=c, sharpness=s)
         try:
             with Image.open(path) as img:
                 img.load()
@@ -541,6 +699,16 @@ class ScannerService:
                 deskewed_img, deskew_ang = ScannerService.deskew_image(img, return_angle=True)
                 if abs(deskew_ang) > 0.2 and abs(deskew_ang) <= 5.0:
                     img = deskewed_img
+                # Backup raw prima della taratura
+                raw_backup = Path(path).with_suffix(".raw.jpg")
+                if not raw_backup.exists():
+                    try:
+                        img.convert("RGB").save(str(raw_backup), format="JPEG", quality=95)
+                    except Exception:
+                        pass
+                # Applica sempre la taratura personalizzata configurata (luminosità, contrasto, nitidezza)
+                if abs(b - 1.0) > 0.01 or abs(c - 1.0) > 0.01 or abs(s - 1.0) > 0.01:
+                    img = ScannerService.apply_image_tuning(img, brightness=b, contrast=c, sharpness=s)
                 rgb = img.convert("RGB")
             rgb.save(str(path), format="JPEG", quality=95)
         except Exception as e:
@@ -560,6 +728,8 @@ class ScannerService:
         progress_cb: Optional[Callable[[int, str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
         prefix: str = "scan_batch",
+        archive_raw: bool = True,
+        on_page_acquired: Optional[Callable[[Path], None]] = None,
     ) -> List[Path]:
         """Acquisisce una o più pagine dallo scanner indicato. Pensato per un THREAD SECONDARIO.
 
@@ -671,17 +841,23 @@ class ScannerService:
                             details=f"file='{out.name}'"
                         )
                         continue
+                    if archive_raw:
+                        try:
+                            from ..services.history_service import get_history_service
+                            get_history_service().archive_raw_scan(out, prefix="scanner")
+                        except Exception:
+                            pass
                     ScannerService._finalize_scan(out, optimize)
-                    try:
-                        from ..services.history_service import get_history_service
-                        get_history_service().archive_raw_scan(out, prefix="scanner")
-                    except Exception:
-                        pass
                 except Exception as e:
                     raise ScanBatchError(f"Impossibile salvare il foglio {n}: {e}", pages)
                 pages.append(out)
                 if progress_cb:
                     progress_cb(n, f"Foglio {n} acquisito")
+                if on_page_acquired:
+                    try:
+                        on_page_acquired(out)
+                    except Exception as ex:
+                        logger.logger.warning(f"Errore callback on_page_acquired per {out}: {ex}")
             logger.log_scan_event(
                 "Acquisizione completata", source=source, dpi=dpi,
                 details=f"Pagine valide acquisite: {len(pages)} | Pagine bianche scartate: {ScannerService.last_blank_skipped}"
@@ -702,6 +878,7 @@ class ScannerService:
         optimize: bool = True,
         progress_cb: Optional[Callable[[int, str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
+        archive_raw: bool = True,
     ) -> List[Path]:
         """Acquisisce un lotto continuo dall'ADF (Alimentatore Automatico Fogli).
 
@@ -713,7 +890,15 @@ class ScannerService:
         if not dev:
             return []
         return ScannerService.acquire_pages(
-            dev, SOURCE_FEEDER, max_pages, dpi, optimize, progress_cb, cancel_event, "scan_batch"
+            device_id=dev,
+            source=SOURCE_FEEDER,
+            max_pages=max_pages,
+            dpi=dpi,
+            optimize=optimize,
+            progress_cb=progress_cb,
+            cancel_event=cancel_event,
+            prefix="scan_batch",
+            archive_raw=archive_raw,
         )
 
     # ------------------------------------------------------------------ file da disco
@@ -816,7 +1001,17 @@ class ScannerService:
                             img = img.rotate(180, expand=True)
                         if img.mode != "RGB":
                             img = img.convert("RGB")
-                        dest = TEST_IMAGES_DIR / f"caricata_v3_{timestamp}_{counter:02d}.jpg"
+                        try:
+                            from ..config import load_app_config
+                            cfg = load_app_config()
+                            b = float(cfg.get("image_brightness", 1.0))
+                            c = float(cfg.get("image_contrast", 1.0))
+                            s = float(cfg.get("image_sharpness", 1.0))
+                            if abs(b - 1.0) > 0.01 or abs(c - 1.0) > 0.01 or abs(s - 1.0) > 0.01:
+                                img = ScannerService.apply_image_tuning(img, brightness=b, contrast=c, sharpness=s)
+                        except Exception:
+                            pass
+                        dest = TEST_IMAGES_DIR / f"caricata_v3_{timestamp}_{counter:02d}.jpg" 
                         img.save(dest, format="JPEG", quality=95)
                         ready.append(dest)
                 except Exception as e:
@@ -906,7 +1101,12 @@ class ScannerService:
         return img
 
     @staticmethod
-    def auto_optimize_scan(image_path: Path) -> Path:
+    def auto_optimize_scan(
+        image_input: Union[Path, str, Image.Image],
+        brightness: Optional[float] = None,
+        contrast: Optional[float] = None,
+        sharpness: Optional[float] = None,
+    ) -> Union[Path, Image.Image]:
         """Esegue automaticamente l'intera pipeline di ottimizzazione documentale:
         1. Auto-ritaglio dell'eventuale coda bianca in eccesso (overscan ADF).
         2. Auto-rotazione in orizzontale se l'immagine è verticale (formato MOD. A).
@@ -914,44 +1114,82 @@ class ScannerService:
         4. Normalizzazione dello sfondo cartaceo a bianco puro.
         5. Potenziamento specifico della grafite/matita e penne sbiadite (curva non-lineare sui mezzitoni).
         6. Incremento della nitidezza sui contorni numerici per la massima leggibilità.
-        Salva l'immagine ottimizzata pronta sia per l'anteprima a video sia per l'invio all'IA.
+        7. Applicazione delle regolazioni di taratura personalizzate (luminosità, contrasto, nitidezza).
+        Salva l'immagine ottimizzata se passata come file/path, oppure ritorna l'oggetto Image.Image.
         """
+        if brightness is None or contrast is None or sharpness is None:
+            try:
+                from ..config import load_app_config
+                cfg = load_app_config()
+                if brightness is None:
+                    brightness = float(cfg.get("image_brightness", 1.0))
+                if contrast is None:
+                    contrast = float(cfg.get("image_contrast", 1.0))
+                if sharpness is None:
+                    sharpness = float(cfg.get("image_sharpness", 1.0))
+            except Exception:
+                brightness = brightness if brightness is not None else 1.0
+                contrast = contrast if contrast is not None else 1.0
+                sharpness = sharpness if sharpness is not None else 1.0
         try:
             from PIL import Image, ImageEnhance
-            with Image.open(image_path) as img:
+            is_pil = isinstance(image_input, Image.Image)
+            if is_pil:
+                img = image_input.copy()
+            else:
+                img = Image.open(image_input)
                 img.load()
-                # 0. Rimuove eventuale mezza pagina bianca se il driver ADF ha scansionato oltre A4
+
+            # 0. Rimuove eventuale mezza pagina bianca se il driver ADF ha scansionato oltre A4
+            img = ScannerService._trim_overscan_padding(img)
+            # 1. Rotazione automatica in orizzontale se verticale
+            if img.height > img.width:
+                img = img.rotate(90, expand=True)
+            # Verifica anche dopo rotazione se resta coda bianca a destra
+            img = ScannerService._trim_overscan_padding(img)
+
+            # 2. Auto-raddrizzamento se la scheda è sottosopra / capovolta (180°)
+            if ScannerService.is_page_upside_down(img):
+                img = img.rotate(180, expand=True)
                 img = ScannerService._trim_overscan_padding(img)
-                # 1. Rotazione automatica in orizzontale se verticale
-                if img.height > img.width:
-                    img = img.rotate(90, expand=True)
-                # Verifica anche dopo rotazione se resta coda bianca a destra
-                img = ScannerService._trim_overscan_padding(img)
 
-                # 2. Auto-raddrizzamento se la scheda è sottosopra / capovolta (180°)
-                if ScannerService.is_page_upside_down(img):
-                    img = img.rotate(180, expand=True)
-                    img = ScannerService._trim_overscan_padding(img)
+            # 3. Fine Deskewing automatico (inclinazione -5.0° .. +5.0°)
+            deskewed_img, deskew_ang = ScannerService.deskew_image(img, return_angle=True)
+            if abs(deskew_ang) > 0.2 and abs(deskew_ang) <= 5.0:
+                img = deskewed_img
 
-                # 3. Fine Deskewing automatico (inclinazione -5.0° .. +5.0°)
-                deskewed_img, deskew_ang = ScannerService.deskew_image(img, return_angle=True)
-                if abs(deskew_ang) > 0.2 and abs(deskew_ang) <= 5.0:
-                    img = deskewed_img
+            # Salva la scansione preservando tutti i livelli di grigio della matita chiara
+            # (senza Brightness/Contrast distruttivi che brucerebbero i tratti leggeri a 255)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            # Backup raw prima della taratura
+            if not is_pil:
+                raw_backup = Path(image_input).with_suffix(".raw.jpg")
+                if not raw_backup.exists():
+                    try:
+                        img.convert("RGB").save(str(raw_backup), format="JPEG", quality=95)
+                    except Exception:
+                        pass
 
-                # Salva la scansione preservando tutti i livelli di grigio della matita chiara
-                # (senza Brightness/Contrast distruttivi che brucerebbero i tratti leggeri a 255)
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
+            if abs(brightness - 1.0) > 0.01 or abs(contrast - 1.0) > 0.01 or abs(sharpness - 1.0) > 0.01:
+                enhanced = ScannerService.apply_image_tuning(
+                    img, brightness=brightness, contrast=contrast, sharpness=sharpness
+                )
+            else:
                 import numpy as np
                 arr = np.array(img, dtype=np.float32) / 255.0
-                # Leggera curva gamma (>1 scurisce i mezzitoni senza bruciare i grigi 235..254 a 255)
                 gamma_arr = np.power(arr, 1.35)
                 p1 = Image.fromarray((gamma_arr * 255.0).astype(np.uint8))
                 enhanced = ImageEnhance.Sharpness(p1).enhance(1.15)
-                enhanced.save(str(image_path), format="JPEG", quality=95)
+
+            if is_pil:
+                return enhanced
+            else:
+                enhanced.save(str(image_input), format="JPEG", quality=95)
+                return Path(image_input)
         except Exception as e:
             print(f"Avviso ottimizzazione automatica: {e}")
-        return image_path
+            return image_input
 
     @staticmethod
     def enhance_contrast(image_path: Path, factor: float = 1.30) -> Path:
@@ -1054,4 +1292,7 @@ class ScannerService:
 
 deskew_image = ScannerService.deskew_image
 detect_skew_angle = ScannerService.detect_skew_angle
+detect_scanners = ScannerService.detect_scanners
+get_scanner_status = ScannerService.get_scanner_status
+apply_image_tuning = ScannerService.apply_image_tuning
 

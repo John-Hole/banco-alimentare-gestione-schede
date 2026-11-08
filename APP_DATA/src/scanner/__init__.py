@@ -7,6 +7,9 @@ from .scanner_service import (
     SOURCE_FLATBED,
     FeederNotAvailableError,
     ScanBatchError,
+    detect_scanners,
+    get_scanner_status,
+    apply_image_tuning,
 )
 from .presets_config import (
     PRESETS_CONFIG,
@@ -35,6 +38,9 @@ __all__ = [
     "SOURCE_FLATBED",
     "FeederNotAvailableError",
     "ScanBatchError",
+    "detect_scanners",
+    "get_scanner_status",
+    "apply_image_tuning",
     "PRESETS_CONFIG",
     "AUTO_CLASSIFIER_THRESHOLDS",
     "EXPORT_CONFIG",

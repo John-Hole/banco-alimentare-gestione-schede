@@ -329,5 +329,96 @@ class TestCascadeExtractor(unittest.TestCase):
                     self.assertEqual(raw.costo_usd, 0.0)
 
 
+
+    def test_json_repair_in_parse_json_response(self):
+        """Verifica che parse_json_response ripari virgole mancanti o trailing commas tipiche degli LLM."""
+        from src.extractors.base import BaseVisionExtractor
+
+        # Test case: virgola mancante tra attributi (lo stesso errore riscontrato dall'utente)
+        broken_json = '''{
+            "supermercato": "COOP PERUGIA"
+            "scheda_n": "1"
+            "colonne": [
+                {
+                    "colonna_idx": 7,
+                    "categoria": "Pasta",
+                    "scatole": [
+                        {"riga": "1a", "kg": 7.0}
+                        {"riga": "2a", "kg": 6.0}
+                    ]
+                }
+            ]
+        }'''
+        raw = BaseVisionExtractor.parse_json_response(broken_json)
+        self.assertEqual(raw.supermercato, "COOP PERUGIA")
+        self.assertEqual(len(raw.righe_scatole), 2)
+        self.assertEqual(raw.righe_scatole[0].kg, 7.0)
+        self.assertEqual(raw.righe_scatole[1].kg, 6.0)
+
+    def test_is_valid_raw_extraction_helper(self):
+        """Verifica che _is_valid_raw_extraction identifichi correttamente errori fatali rispetto a schede valide."""
+        # 1. Scheda con scatole: valida
+        raw_ok = RawCardExtraction(righe_scatole=[BoxItem(categoria="Pasta", kg=5.0)])
+        self.assertTrue(CascadeVisionExtractor._is_valid_raw_extraction(raw_ok))
+
+        # 2. Scheda vuota lecita: valida
+        raw_empty = RawCardExtraction(righe_scatole=[], note_o_anomalie="")
+        self.assertTrue(CascadeVisionExtractor._is_valid_raw_extraction(raw_empty))
+
+        # 3. Scheda con errore di sintassi JSON: NON valida
+        raw_syntax_err = RawCardExtraction(righe_scatole=[], note_o_anomalie="Impossibile interpretare JSON: Expecting ',' delimiter: line 30")
+        self.assertFalse(CascadeVisionExtractor._is_valid_raw_extraction(raw_syntax_err))
+
+        # 4. Risposta vuota dal modello: NON valida
+        raw_empty_resp = RawCardExtraction(righe_scatole=[], note_o_anomalie="Risposta vuota dal modello")
+        self.assertFalse(CascadeVisionExtractor._is_valid_raw_extraction(raw_empty_resp))
+
+    def test_cascade_failover_on_malformed_json_response(self):
+        """Verifica che se Gemini restituisce un JSON malformato (irrecuperabile), la cascata non si blocchi e passi a Piano B."""
+        mock_tracker = MagicMock()
+        mock_tracker.is_exhausted.return_value = False
+
+        extractor = CascadeVisionExtractor(
+            gemini_api_key_1="KEY1",
+            openrouter_api_key="OR_KEY",
+            quota_tracker=mock_tracker,
+            variant="v1"
+        )
+
+        # Gemini restituisce HTTP 200 ma con contenuto che non e' JSON
+        gemini_bad_res = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "Mi spiace, non posso elaborare questa immagine in formato JSON."}]
+                    }
+                }
+            ],
+            "usageMetadata": {"totalTokenCount": 500}
+        }
+
+        # Piano B (GPT-6 Luna) restituisce JSON valido
+        luna_good_payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"supermercato": "COOP SALVATA DA LUNA", "scheda_n": "1", "colonne": [{"colonna_idx": 7, "categoria": "Pasta", "scatole": [{"riga": "1a", "kg": 15.0}]}]}'
+                    }
+                }
+            ],
+            "usage": {"total_tokens": 120, "cost": 0.0015}
+        }
+
+        with patch.object(extractor, "encode_and_optimize_image", return_value=("image/jpeg", "fake_b64")):
+            with patch.object(extractor, "_call_gemini", return_value=(200, gemini_bad_res, "", 1.0)):
+                with patch.object(extractor, "_call_openrouter", return_value=(200, luna_good_payload, "", 1.2)):
+                    raw = extractor.extract_from_image("scheda_test.jpg")
+                    # Verifica che il risultato finale provenga da Piano B e contenga i dati
+                    self.assertEqual(raw.supermercato, "COOP SALVATA DA LUNA")
+                    self.assertEqual(len(raw.righe_scatole), 1)
+                    self.assertEqual(raw.righe_scatole[0].kg, 15.0)
+                    self.assertIn("Piano B: GPT-6 Luna", raw.note_o_anomalie)
+
+
 if __name__ == "__main__":
     unittest.main()

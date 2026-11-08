@@ -3,7 +3,7 @@
 import base64
 import mimetypes
 import time
-from typing import Optional, Tuple, Dict, Any
+from typing import Callable, Optional, Tuple, Dict, Any
 import requests
 
 from .base import BaseVisionExtractor, EXTRACTION_SYSTEM_PROMPT
@@ -78,7 +78,7 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
 
         t0 = time.time()
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=(8, 30))
+            resp = requests.post(url, headers=headers, json=payload, timeout=(5, 20))
             duration = time.time() - t0
             if resp.status_code != 200:
                 self.session_logger.log_ai_result("OpenRouter", "OpenRouter", self.model, resp.status_code, duration, is_success=False, error_msg=resp.text[:300])
@@ -97,7 +97,7 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
             self.session_logger.log_ai_result("OpenRouter", "OpenRouter", self.model, 500, duration, is_success=False, error_msg=str(e))
             return 500, {}, f"Eccezione di rete OpenRouter: {e}", duration
 
-    def extract_from_image(self, image_path: str) -> RawCardExtraction:
+    def extract_from_image(self, image_path: str, status_callback: Optional[Callable[[str], None]] = None) -> RawCardExtraction:
         if not self.api_key:
             if self.fallback_extractor:
                 return self.fallback_extractor.extract_from_image(image_path)
@@ -111,6 +111,8 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
             return RawCardExtraction(note_o_anomalie=f"Impossibile leggere/ottimizzare immagine: {e}")
 
         # 1. Tentativo con Chiave Primaria OpenRouter
+        if status_callback:
+            status_callback(f"📡 Invio richiesta a OpenRouter ({self.model})...")
         status_code, result_json, err_text, duration = self._execute_openrouter_call(
             self.api_key, img_data, mime_type
         )
@@ -130,14 +132,19 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
             if not text_content or not text_content.strip():
                 text_content = msg.get("reasoning", "") or msg.get("reasoning_content", "") or ""
             card = self.parse_json_response(text_content)
-            card.tempo_elaborazione_sec = round(duration, 1)
-            card.costo_usd = cost
-            disp_name = self.display_name or f"OpenRouter ({self.model})"
-            cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
-            badge = f"[{disp_name} | {duration:.1f}s | {cost_str}]"
-            if badge not in (card.note_o_anomalie or ""):
-                card.note_o_anomalie = f"{badge} {card.note_o_anomalie or ''}".strip()
-            return card
+            if not self.is_valid_raw_extraction(card):
+                self.session_logger.logger.warning(
+                    f"[OpenRouter] Risposta o JSON non valido dal modello {self.model}: {card.note_o_anomalie}. Avvio fallback..."
+                )
+            else:
+                card.tempo_elaborazione_sec = round(duration, 1)
+                card.costo_usd = cost
+                disp_name = self.display_name or f"OpenRouter ({self.model})"
+                cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
+                badge = f"[{disp_name} | {duration:.1f}s | {cost_str}]"
+                if badge not in (card.note_o_anomalie or ""):
+                    card.note_o_anomalie = f"{badge} {card.note_o_anomalie or ''}".strip()
+                return card
 
         # Se fallisce, registra errore
         self.tracker.record_call(
@@ -177,12 +184,17 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
                     if not text_content or not text_content.strip():
                         text_content = msg.get("reasoning", "") or msg.get("reasoning_content", "") or ""
                     card = self.parse_json_response(text_content)
-                    card.tempo_elaborazione_sec = round(fb_dur, 1)
-                    card.costo_usd = cost
-                    disp_name = self.display_name or f"OpenRouter ({self.model})"
-                    cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
-                    card.note_o_anomalie = f"[{disp_name} (Backup) | {fb_dur:.1f}s | {cost_str}]: {card.note_o_anomalie or ''}".strip()
-                    return card
+                    if self.is_valid_raw_extraction(card):
+                        card.tempo_elaborazione_sec = round(fb_dur, 1)
+                        card.costo_usd = cost
+                        disp_name = self.display_name or f"OpenRouter ({self.model})"
+                        cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
+                        card.note_o_anomalie = f"[{disp_name} (Backup) | {fb_dur:.1f}s | {cost_str}]: {card.note_o_anomalie or ''}".strip()
+                        return card
+                    else:
+                        self.session_logger.logger.warning(
+                            f"[OpenRouter] Risposta o JSON non valido da backup: {card.note_o_anomalie}."
+                        )
             else:
                 self.tracker.record_call(
                     provider="openrouter",

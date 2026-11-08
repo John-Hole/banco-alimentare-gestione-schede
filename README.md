@@ -168,13 +168,3 @@ banco-alimentare-gestione-schede/
     ├── src/                      # Codice sorgente (interfaccia, scanner, IA, excel, validazione)
     └── tests/                    # Suite di test automatici
 ```
-
----
-
-## 🧪 4. Esecuzione dei Test Automatici
-
-Per verificare l'integrità di tutti i moduli dell'applicazione:
-
-```powershell
-python -m unittest discover -s APP_DATA/tests -p "test_*.py" -t APP_DATA
-```

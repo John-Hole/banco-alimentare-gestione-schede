@@ -16,21 +16,20 @@ from src.models import RawCardExtraction, BoxItem, DeclaredTotals, FlagSeverity
 class TestImageEnhancements(unittest.TestCase):
 
     def test_non_destructive_optimization(self):
-        # Crea un'immagine sintetica con gradiente e linee chiare
+        import tempfile
+
         img = Image.new("RGB", (200, 200), color=(235, 235, 235))
-        tmp_path = TEST_IMAGES_DIR / "test_unit_curve.jpg"
-        img.save(str(tmp_path), format="JPEG", quality=90)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir) / "test_unit_curve.jpg"
+            img.save(str(tmp_path), format="JPEG", quality=90)
 
-        optimized = ScannerService.auto_optimize_scan(tmp_path)
-        self.assertTrue(optimized.exists())
-        with Image.open(optimized) as res:
-            self.assertEqual(res.mode, "RGB")
-            arr = np.array(res)
-            # Verifica che l'immagine mantenga tonalità corrette
-            self.assertGreaterEqual(arr.mean(), 180)
-
-        if tmp_path.exists():
-            tmp_path.unlink()
+            optimized = ScannerService.auto_optimize_scan(tmp_path)
+            self.assertTrue(optimized.exists())
+            with Image.open(optimized) as res:
+                self.assertEqual(res.mode, "RGB")
+                arr = np.array(res)
+                # Verifica che l'immagine mantenga tonalità corrette
+                self.assertGreaterEqual(arr.mean(), 180)
 
     def test_adjacent_column_drift_detection(self):
         # Simula il caso esatto: Olio manca di 3 kg (dichiarati 4 vs calcolati 1)

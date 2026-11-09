@@ -88,8 +88,42 @@ class ScannerService:
     _device_id: Optional[str] = None
     _last_known_ip: Optional[str] = None
 
+    # Registro thread-safe: working image path -> archived raw path in SCANSIONI/<YYYY-MM-DD>/...
+    _raw_archive_lock = threading.Lock()
+    _raw_archive_registry: Dict[str, str] = {}
+
     # Numero di pagine bianche scartate nell'ultima acquisizione / caricamento
     last_blank_skipped: int = 0
+
+    @classmethod
+    def register_raw_archive(
+        cls,
+        work_path: Union[str, Path],
+        raw_path: Optional[Union[str, Path]],
+    ) -> None:
+        """Associa in modo sicuro il file temporaneo di lavoro alla sua copia grezza archiviata."""
+        if not work_path or not isinstance(raw_path, (str, Path)):
+            return
+        try:
+            key = str(Path(work_path).resolve())
+            val = str(Path(raw_path))
+        except Exception:
+            key = str(work_path)
+            val = str(raw_path)
+        with cls._raw_archive_lock:
+            cls._raw_archive_registry[key] = val
+
+    @classmethod
+    def get_raw_archive(cls, work_path: Union[str, Path]) -> Optional[str]:
+        """Restituisce il percorso della copia grezza archiviata per work_path, se registrata."""
+        if not work_path:
+            return None
+        try:
+            key = str(Path(work_path).resolve())
+        except Exception:
+            key = str(work_path)
+        with cls._raw_archive_lock:
+            return cls._raw_archive_registry.get(key)
 
     @staticmethod
     def is_blank_page(image_path: Path, ink_ratio_threshold: float = 0.0025) -> bool:
@@ -209,14 +243,17 @@ class ScannerService:
             with Image.open(path) as img:
                 img.load()
                 changed = False
+                rot_raw_angle = 0
                 orig_dim = f"{img.width}x{img.height}"
                 if img.height > img.width:
                     img = img.rotate(90, expand=True)
                     changed = True
+                    rot_raw_angle = (rot_raw_angle + 90) % 360
                     logger.log_orientation_event(str(path), 90, f"Ruotata a orizzontale (da {orig_dim} a {img.width}x{img.height})")
                 if ScannerService.is_page_upside_down(img):
                     img = img.rotate(180, expand=True)
                     changed = True
+                    rot_raw_angle = (rot_raw_angle + 180) % 360
                     logger.log_orientation_event(str(path), 180, "Rilevata capovolta: ruotata di 180°")
 
                 # 3. Fine Deskewing automatico (inclinazione -5.0° .. +5.0°)
@@ -230,6 +267,8 @@ class ScannerService:
                     if img.mode != "RGB":
                         img = img.convert("RGB")
                     img.save(str(path), format="JPEG", quality=95)
+                    if rot_raw_angle % 360 != 0:
+                        ScannerService.rotate_sibling_raw_backup(path, rot_raw_angle)
                     return True
                 else:
                     logger.log_orientation_event(str(path), 0, "Orientamento corretto (orizzontale dritto)")
@@ -351,8 +390,32 @@ class ScannerService:
         return (img, 0.0) if return_angle else img
 
     @staticmethod
+    def rotate_sibling_raw_backup(image_path: Path | str, angle_ccw: int) -> None:
+        """Se esiste un backup .raw.jpg affiancato al file di lavoro, lo ruota dello stesso angolo
+        affinché una futura ritaratura da Impostazioni non ripristini l'orientamento precedente.
+        """
+        norm_angle = int(angle_ccw) % 360
+        if norm_angle == 0:
+            return
+        path = Path(image_path)
+        raw_backup = path.with_suffix(".raw.jpg")
+        try:
+            if raw_backup.exists() and raw_backup.is_file() and raw_backup.resolve() != path.resolve():
+                with Image.open(raw_backup) as raw_im:
+                    raw_im.load()
+                    rot_raw = raw_im.rotate(norm_angle, expand=True)
+                    if rot_raw.mode != "RGB":
+                        rot_raw = rot_raw.convert("RGB")
+                    rot_raw.save(str(raw_backup), format="JPEG", quality=95)
+        except Exception as e:
+            try:
+                get_session_logger().logger.warning(f"[ORIENTAMENTO] Avviso sincronizzazione rotazione .raw.jpg: {e}")
+            except Exception:
+                pass
+
+    @staticmethod
     def rotate_image_file_180(image_path: Path | str) -> Path:
-        """Ruota fisicamente di 180° l'immagine salvata su disco."""
+        """Ruota fisicamente di 180° l'immagine salvata su disco e l'eventuale backup .raw.jpg."""
         path = Path(image_path)
         logger = get_session_logger()
         if not path.exists():
@@ -364,6 +427,7 @@ class ScannerService:
                 if rot.mode != "RGB":
                     rot = rot.convert("RGB")
                 rot.save(str(path), format="JPEG", quality=95)
+                ScannerService.rotate_sibling_raw_backup(path, 180)
                 logger.log_orientation_event(str(path), 180, "Rotazione manuale/IA di 180° applicata")
         except Exception as e:
             logger.logger.error(f"[ORIENTAMENTO] Errore rotazione 180 file {path}: {e}")
@@ -516,13 +580,18 @@ class ScannerService:
     @staticmethod
     def detect_scanners() -> List[Dict[str, Any]]:
         """Interroga WIA per rilevare tutti gli scanner collegati (USB, Wi-Fi, Ethernet, WSD, eSCL).
-        
+
+        Usa un probe di connessione con timeout limitato (3s) per periferica per evitare blocchi
+        di ~50s dovuti a scanner di rete WSD/eSCL spenti o offline.
+
         Ritorna una lista di dizionari con chiavi:
         - 'id': ID periferica WIA
         - 'name': Nome descrittivo dello scanner
         - 'status': 'ready' | 'busy' | 'error'
         """
-        results: List[Dict[str, Any]] = []
+        import time
+
+        enumerated: List[Tuple[str, str, Any]] = []
         com_inited = False
         try:
             import pythoncom
@@ -543,31 +612,74 @@ class ScannerService:
                         dev_name = str(info.Properties(7).Value)
                     except Exception:
                         dev_name = dev_id
-
-                status = "ready"
-                try:
-                    conn = info.Connect()
-                    if conn is None:
-                        status = "busy"
-                except Exception as e:
-                    err_msg = str(e).lower()
-                    if "busy" in err_msg or "occupato" in err_msg or "0x80210006" in err_msg:
-                        status = "busy"
-                    else:
-                        status = "busy"
-                results.append({"id": dev_id, "name": dev_name, "status": status})
+                enumerated.append((dev_id, dev_name, info))
         except Exception as e:
             try:
                 get_session_logger().logger.warning(f"Rilevamento scanner WIA: {e}")
             except Exception:
                 pass
+            return []
         finally:
             if com_inited:
                 try:
                     pythoncom.CoUninitialize()
                 except Exception:
                     pass
-        return results
+
+        if not enumerated:
+            return []
+
+        connect_timeout_sec = 3.0
+        statuses: List[str] = ["busy"] * len(enumerated)
+        threads: List[threading.Thread] = []
+
+        for idx, (dev_id, _dev_name, info) in enumerate(enumerated):
+            is_real_com = hasattr(info, "_oleobj_")
+
+            def _probe(slot_idx: int = idx, target_id: str = dev_id, raw_info: Any = info, real_com: bool = is_real_com):
+                probe_com = False
+                try:
+                    if real_com:
+                        try:
+                            import pythoncom
+                            pythoncom.CoInitialize()
+                            probe_com = True
+                        except Exception:
+                            pass
+                        import win32com.client
+                        probe_mgr = win32com.client.Dispatch("WIA.DeviceManager")
+                        matched = None
+                        for pinfo in probe_mgr.DeviceInfos:
+                            if str(pinfo.DeviceID) == target_id:
+                                matched = pinfo
+                                break
+                        conn = matched.Connect() if matched is not None else None
+                    else:
+                        conn = raw_info.Connect()
+                    statuses[slot_idx] = "ready" if conn is not None else "busy"
+                except Exception:
+                    statuses[slot_idx] = "busy"
+                finally:
+                    if probe_com:
+                        try:
+                            import pythoncom
+                            pythoncom.CoUninitialize()
+                        except Exception:
+                            pass
+
+            t = threading.Thread(target=_probe, daemon=True)
+            threads.append(t)
+            t.start()
+
+        deadline = time.monotonic() + connect_timeout_sec
+        for t in threads:
+            remaining = max(0.05, deadline - time.monotonic())
+            t.join(timeout=remaining)
+
+        return [
+            {"id": dev_id, "name": dev_name, "status": statuses[idx]}
+            for idx, (dev_id, dev_name, _info) in enumerate(enumerated)
+        ]
 
     @staticmethod
     def get_scanner_status() -> Dict[str, Any]:
@@ -673,8 +785,31 @@ class ScannerService:
         return target
 
     @staticmethod
-    def _finalize_scan(path: Path, optimize: bool) -> Path:
-        """Pipeline post-acquisizione: ottimizzazione completa oppure semplice normalizzazione JPEG."""
+    def _normalize_scan_geometry(img: Image.Image) -> Image.Image:
+        """Normalizza l'orientamento geometrico senza alterare luminosità, contrasto o gamma.
+
+        1. Ritaglia l'eventuale coda bianca in eccesso (overscan ADF).
+        2. Ruota in orizzontale se verticale.
+        3. Capovolge di 180° se la scheda risulta sottosopra.
+        4. Esegue il fine deskew (-5.0° .. +5.0°).
+        """
+        img = ScannerService._trim_overscan_padding(img)
+        if img.height > img.width:
+            img = img.rotate(90, expand=True)
+        img = ScannerService._trim_overscan_padding(img)
+        if ScannerService.is_page_upside_down(img):
+            img = img.rotate(180, expand=True)
+            img = ScannerService._trim_overscan_padding(img)
+        deskewed_img, deskew_ang = ScannerService.deskew_image(img, return_angle=True)
+        if abs(deskew_ang) > 0.2 and abs(deskew_ang) <= 5.0:
+            img = deskewed_img
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        return img
+
+    @staticmethod
+    def _finalize_scan(path: Path, optimize: bool = False) -> Path:
+        """Pipeline post-acquisizione uniforme: normalizza geometria, salva .raw.jpg e applica solo i parametri configurati."""
         try:
             from ..config import load_app_config
             cfg = load_app_config()
@@ -684,36 +819,7 @@ class ScannerService:
         except Exception:
             b, c, s = 1.0, 1.0, 1.0
 
-        if optimize:
-            return ScannerService.auto_optimize_scan(path, brightness=b, contrast=c, sharpness=s)
-        try:
-            with Image.open(path) as img:
-                img.load()
-                img = ScannerService._trim_overscan_padding(img)
-                if img.height > img.width:
-                    img = img.rotate(90, expand=True)
-                img = ScannerService._trim_overscan_padding(img)
-                if ScannerService.is_page_upside_down(img):
-                    img = img.rotate(180, expand=True)
-                    img = ScannerService._trim_overscan_padding(img)
-                deskewed_img, deskew_ang = ScannerService.deskew_image(img, return_angle=True)
-                if abs(deskew_ang) > 0.2 and abs(deskew_ang) <= 5.0:
-                    img = deskewed_img
-                # Backup raw prima della taratura
-                raw_backup = Path(path).with_suffix(".raw.jpg")
-                if not raw_backup.exists():
-                    try:
-                        img.convert("RGB").save(str(raw_backup), format="JPEG", quality=95)
-                    except Exception:
-                        pass
-                # Applica sempre la taratura personalizzata configurata (luminosità, contrasto, nitidezza)
-                if abs(b - 1.0) > 0.01 or abs(c - 1.0) > 0.01 or abs(s - 1.0) > 0.01:
-                    img = ScannerService.apply_image_tuning(img, brightness=b, contrast=c, sharpness=s)
-                rgb = img.convert("RGB")
-            rgb.save(str(path), format="JPEG", quality=95)
-        except Exception as e:
-            print(f"Avviso normalizzazione scansione: {e}")
-        return path
+        return ScannerService.auto_optimize_scan(path, brightness=b, contrast=c, sharpness=s)
 
     # ------------------------------------------------------------------ acquisizione multi-pagina
 
@@ -844,7 +950,8 @@ class ScannerService:
                     if archive_raw:
                         try:
                             from ..services.history_service import get_history_service
-                            get_history_service().archive_raw_scan(out, prefix="scanner")
+                            raw_arch = get_history_service().archive_raw_scan(out, prefix="scanner")
+                            ScannerService.register_raw_archive(out, raw_arch)
                         except Exception:
                             pass
                     ScannerService._finalize_scan(out, optimize)
@@ -971,7 +1078,8 @@ class ScannerService:
 
     @staticmethod
     def prepare_uploaded_files(paths: List[str]) -> Tuple[List[Path], List[str]]:
-        """Prepara file scelti da disco (immagini e PDF): orientamento orizzontale e leggero contrasto.
+        """Prepara file scelti da disco (immagini e PDF): archivia copia grezza, normalizza geometria,
+        salva .raw.jpg e applica la taratura configurata dall'utente.
 
         Ritorna (immagini_pronte, avvisi). Non solleva eccezioni: i file problematici finiscono negli avvisi.
         """
@@ -980,6 +1088,16 @@ class ScannerService:
         ScannerService.last_blank_skipped = 0
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         counter = 0
+
+        try:
+            from ..config import load_app_config
+            cfg = load_app_config()
+            b = float(cfg.get("image_brightness", 1.0))
+            c = float(cfg.get("image_contrast", 1.0))
+            s = float(cfg.get("image_sharpness", 1.0))
+        except Exception:
+            b, c, s = 1.0, 1.0, 1.0
+
         for raw in paths:
             src = Path(raw)
             try:
@@ -987,32 +1105,34 @@ class ScannerService:
             except Exception as e:
                 warnings.append(str(e))
                 continue
+            is_multi_page = len(paths) > 1 or len(sources) > 1
             for item in sources:
                 counter += 1
-                if len(paths) + len(sources) > 1 and ScannerService.is_blank_page(item):
+                if is_multi_page and ScannerService.is_blank_page(item):
                     ScannerService.last_blank_skipped += 1
                     continue
                 try:
+                    raw_arch = None
+                    try:
+                        from ..services.history_service import get_history_service
+                        raw_arch = get_history_service().archive_raw_scan(item, prefix="upload")
+                    except Exception:
+                        raw_arch = None
+
                     with Image.open(item) as img:
                         img.load()
-                        if img.height > img.width:
-                            img = img.rotate(90, expand=True)
-                        if ScannerService.is_page_upside_down(img):
-                            img = img.rotate(180, expand=True)
-                        if img.mode != "RGB":
-                            img = img.convert("RGB")
+                        img = ScannerService._normalize_scan_geometry(img)
+                        dest = TEST_IMAGES_DIR / f"caricata_v3_{timestamp}_{counter:02d}.jpg"
+                        raw_backup = dest.with_suffix(".raw.jpg")
                         try:
-                            from ..config import load_app_config
-                            cfg = load_app_config()
-                            b = float(cfg.get("image_brightness", 1.0))
-                            c = float(cfg.get("image_contrast", 1.0))
-                            s = float(cfg.get("image_sharpness", 1.0))
-                            if abs(b - 1.0) > 0.01 or abs(c - 1.0) > 0.01 or abs(s - 1.0) > 0.01:
-                                img = ScannerService.apply_image_tuning(img, brightness=b, contrast=c, sharpness=s)
+                            img.convert("RGB").save(str(raw_backup), format="JPEG", quality=95)
                         except Exception:
                             pass
-                        dest = TEST_IMAGES_DIR / f"caricata_v3_{timestamp}_{counter:02d}.jpg" 
-                        img.save(dest, format="JPEG", quality=95)
+                        tuned = ScannerService.apply_image_tuning(img, brightness=b, contrast=c, sharpness=s)
+                        if tuned.mode != "RGB":
+                            tuned = tuned.convert("RGB")
+                        tuned.save(dest, format="JPEG", quality=95)
+                        ScannerService.register_raw_archive(dest, raw_arch)
                         ready.append(dest)
                 except Exception as e:
                     warnings.append(f"{item.name}: {e}")
@@ -1037,7 +1157,13 @@ class ScannerService:
                 output_file.unlink()
             image.SaveFile(str(output_file))
 
-            # Applica subito tutte le migliorie: orientamento orizzontale, sbiancamento sfondo e ricalco matita
+            try:
+                from ..services.history_service import get_history_service
+                raw_arch = get_history_service().archive_raw_scan(output_file, prefix="scanner")
+                ScannerService.register_raw_archive(output_file, raw_arch)
+            except Exception:
+                pass
+
             ScannerService._finalize_scan(output_file, optimize)
 
             return output_file
@@ -1107,15 +1233,11 @@ class ScannerService:
         contrast: Optional[float] = None,
         sharpness: Optional[float] = None,
     ) -> Union[Path, Image.Image]:
-        """Esegue automaticamente l'intera pipeline di ottimizzazione documentale:
-        1. Auto-ritaglio dell'eventuale coda bianca in eccesso (overscan ADF).
-        2. Auto-rotazione in orizzontale se l'immagine è verticale (formato MOD. A).
-        3. Auto-orientamento/raddrizzamento se la scheda è stata scansionata capovolta (180°).
-        4. Normalizzazione dello sfondo cartaceo a bianco puro.
-        5. Potenziamento specifico della grafite/matita e penne sbiadite (curva non-lineare sui mezzitoni).
-        6. Incremento della nitidezza sui contorni numerici per la massima leggibilità.
-        7. Applicazione delle regolazioni di taratura personalizzate (luminosità, contrasto, nitidezza).
-        Salva l'immagine ottimizzata se passata come file/path, oppure ritorna l'oggetto Image.Image.
+        """Normalizza la geometria della scansione (overscan, 90°, 180°, deskew) e applica
+        esclusivamente i parametri di taratura configurati (luminosità, contrasto, nitidezza)
+        senza alcuna alterazione gamma nascosta.
+
+        Salva l'immagine se passata come file/path (preservando .raw.jpg), oppure ritorna PIL Image.Image.
         """
         if brightness is None or contrast is None or sharpness is None:
             try:
@@ -1132,7 +1254,6 @@ class ScannerService:
                 contrast = contrast if contrast is not None else 1.0
                 sharpness = sharpness if sharpness is not None else 1.0
         try:
-            from PIL import Image, ImageEnhance
             is_pil = isinstance(image_input, Image.Image)
             if is_pil:
                 img = image_input.copy()
@@ -1140,29 +1261,9 @@ class ScannerService:
                 img = Image.open(image_input)
                 img.load()
 
-            # 0. Rimuove eventuale mezza pagina bianca se il driver ADF ha scansionato oltre A4
-            img = ScannerService._trim_overscan_padding(img)
-            # 1. Rotazione automatica in orizzontale se verticale
-            if img.height > img.width:
-                img = img.rotate(90, expand=True)
-            # Verifica anche dopo rotazione se resta coda bianca a destra
-            img = ScannerService._trim_overscan_padding(img)
+            img = ScannerService._normalize_scan_geometry(img)
 
-            # 2. Auto-raddrizzamento se la scheda è sottosopra / capovolta (180°)
-            if ScannerService.is_page_upside_down(img):
-                img = img.rotate(180, expand=True)
-                img = ScannerService._trim_overscan_padding(img)
-
-            # 3. Fine Deskewing automatico (inclinazione -5.0° .. +5.0°)
-            deskewed_img, deskew_ang = ScannerService.deskew_image(img, return_angle=True)
-            if abs(deskew_ang) > 0.2 and abs(deskew_ang) <= 5.0:
-                img = deskewed_img
-
-            # Salva la scansione preservando tutti i livelli di grigio della matita chiara
-            # (senza Brightness/Contrast distruttivi che brucerebbero i tratti leggeri a 255)
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            # Backup raw prima della taratura
+            # Backup raw prima della taratura tonale
             if not is_pil:
                 raw_backup = Path(image_input).with_suffix(".raw.jpg")
                 if not raw_backup.exists():
@@ -1171,22 +1272,14 @@ class ScannerService:
                     except Exception:
                         pass
 
-            if abs(brightness - 1.0) > 0.01 or abs(contrast - 1.0) > 0.01 or abs(sharpness - 1.0) > 0.01:
-                enhanced = ScannerService.apply_image_tuning(
-                    img, brightness=brightness, contrast=contrast, sharpness=sharpness
-                )
-            else:
-                import numpy as np
-                arr = np.array(img, dtype=np.float32) / 255.0
-                gamma_arr = np.power(arr, 1.35)
-                p1 = Image.fromarray((gamma_arr * 255.0).astype(np.uint8))
-                enhanced = ImageEnhance.Sharpness(p1).enhance(1.15)
+            enhanced = ScannerService.apply_image_tuning(
+                img, brightness=brightness, contrast=contrast, sharpness=sharpness
+            )
 
             if is_pil:
                 return enhanced
-            else:
-                enhanced.save(str(image_input), format="JPEG", quality=95)
-                return Path(image_input)
+            enhanced.save(str(image_input), format="JPEG", quality=95)
+            return Path(image_input)
         except Exception as e:
             print(f"Avviso ottimizzazione automatica: {e}")
             return image_input

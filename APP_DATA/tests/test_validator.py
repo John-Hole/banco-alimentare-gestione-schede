@@ -141,6 +141,33 @@ class TestCardValidator(unittest.TestCase):
         self.assertFalse(recomputed.ha_flag_rossi)
         self.assertTrue(recomputed.pronto_per_scrittura)
 
+    def test_incomplete_raw_extraction_triggers_blocking_red_flag(self):
+        """Anche se i kg di 1 colonna quadrano, is_incomplete=True deve generare FLAG ROSSO bloccante."""
+        raw = RawCardExtraction(
+            supermercato="TIGRE",
+            numero_scheda="1",
+            righe_scatole=[BoxItem(categoria="Omogeneizzati", kg=10.0)],
+            totali_dichiarati=DeclaredTotals(
+                per_categoria={"Omogeneizzati": {"kg": 10.0, "scatole": 1}}
+            ),
+            note_o_anomalie="[Recupero euristico da sintassi JSON imperfetta]",
+            is_incomplete=True,
+        )
+        card = CardValidator.validate(raw)
+
+        self.assertTrue(card.ha_flag_rossi)
+        self.assertFalse(card.pronto_per_scrittura)
+        self.assertTrue(
+            any(f.field == "estrazione_incompleta" and f.severity == FlagSeverity.RED for f in card.flags)
+        )
+        # recompute_from_categories deve preservare il flag rosso estrazione_incompleta
+        recomputed = CardValidator.recompute_from_categories(card)
+        self.assertTrue(recomputed.ha_flag_rossi)
+        self.assertFalse(recomputed.pronto_per_scrittura)
+        self.assertTrue(
+            any(f.field == "estrazione_incompleta" and f.severity == FlagSeverity.RED for f in recomputed.flags)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

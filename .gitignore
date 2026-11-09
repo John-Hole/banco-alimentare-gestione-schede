@@ -11,6 +11,8 @@ BACKUP/*
 !BACKUP/.gitkeep
 SCANSIONI/*
 !SCANSIONI/.gitkeep
+SUGGERIMENTI/*
+!SUGGERIMENTI/.gitkeep
 /backups/
 /storico_scansioni/
 /logs/

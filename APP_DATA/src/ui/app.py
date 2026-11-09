@@ -50,6 +50,8 @@ from ..config import (
 
     DEFAULT_CASCADE_V2_PRIMARY_MODEL,
 
+    DEFAULT_CASCADE_LUNA_MODEL,
+
     DEFAULT_CASCADE_BUFFER_MODEL,
 
     DEFAULT_CASCADE_HAIKU_MODEL,
@@ -57,6 +59,14 @@ from ..config import (
     DEFAULT_CASCADE_FREE_MODEL,
 
     DEFAULT_CASCADE_ARBITRATOR_MODEL,
+
+    DEFAULT_CASCADE_FREE_PRIMARY_MODE,
+
+    DEFAULT_CASCADE_PAID_MODE,
+
+    DEFAULT_CASCADE_FALLBACK_MODE,
+
+    SUPPORTED_PROVIDERS,
 
     get_pipeline_status,
 
@@ -222,6 +232,10 @@ class BatchItem:
 
     force_strong: bool = False
 
+    raw_archive_path: Optional[str] = None
+
+    raw_assigned_market: str = ""
+
 
 
 
@@ -250,9 +264,19 @@ class BancoAlimentareApp(ctk.CTk):
 
         self.config_data = load_app_config()
 
-        # All'avvio dell'applicazione la modalità iniziale selezionata è sempre Cascata (Consigliata)
+        # Ripristina il provider salvato dall'utente (solo fallback a 'cascade' se mancante o non supportato)
 
-        self.config_data["active_provider"] = "cascade"
+        raw_saved_prov = str(self.config_data.get("active_provider") or "").strip()
+
+        if not raw_saved_prov:
+
+            self.config_data["active_provider"] = "cascade"
+
+        else:
+
+            norm_prov = self._normalize_display_to_provider(raw_saved_prov)
+
+            self.config_data["active_provider"] = norm_prov if norm_prov in SUPPORTED_PROVIDERS else "cascade"
 
         self.session_logger = get_session_logger()
 
@@ -377,9 +401,9 @@ class BancoAlimentareApp(ctk.CTk):
 
     # Etichette del menu provider nell'header nell'ordine esatto richiesto
 
-    PROVIDER_DISPLAY_CASCADE = "🚀 Cascata (Consigliata) (v1: 3.5 -> Luna -> Haiku)"
+    PROVIDER_DISPLAY_CASCADE = "🚀 Cascata Personalizzabile (3 Sezioni — Consigliata)"
 
-    PROVIDER_DISPLAY_CASCADE_V2 = "⚡ Cascata v2 (Gemini 3.8 Primario: 3.8 -> 3.5 -> Luna -> Haiku)"
+    PROVIDER_DISPLAY_CASCADE_V2 = "⚡ Cascata v2 (Gemini 3.8 Primario: 3.8 -> 3.5 -> Haiku -> Nemotron)"
 
     PROVIDER_DISPLAY_GEMINI_35 = "🆓 Gemini 3.5 Flash-Lite (Google API Diretta — Gratis)"
 
@@ -649,6 +673,19 @@ class BancoAlimentareApp(ctk.CTk):
 
 
 
+        arb_free = bool(
+            self.config_data.get(
+                "enable_arbitrator_on_free",
+                self.config_data.get("enable_auto_arbitrator", True),
+            )
+        )
+        arb_paid = bool(self.config_data.get("enable_arbitrator_on_paid", False))
+        arb_any = bool(arb_free or arb_paid)
+        free_mode = self.config_data.get("cascade_free_primary_mode", DEFAULT_CASCADE_FREE_PRIMARY_MODE)
+        paid_mode = self.config_data.get("cascade_paid_mode", DEFAULT_CASCADE_PAID_MODE)
+        fallback_mode = self.config_data.get("cascade_fallback_mode", DEFAULT_CASCADE_FALLBACK_MODE)
+        luna_model = self.config_data.get("cascade_luna_model", DEFAULT_CASCADE_LUNA_MODEL)
+
         if provider == "cascade_v2":
 
             self.active_extractor = CascadeVisionExtractor(
@@ -663,15 +700,27 @@ class BancoAlimentareApp(ctk.CTk):
 
                 gemini_38_model=DEFAULT_CASCADE_V2_PRIMARY_MODEL,
 
-                buffer_model=self.config_data.get("cascade_buffer_model", DEFAULT_CASCADE_BUFFER_MODEL),
+                luna_model=luna_model,
+
+                buffer_model=self.config_data.get("cascade_buffer_model") or self.config_data.get("openrouter_buffer_model", DEFAULT_CASCADE_BUFFER_MODEL),
 
                 haiku_model=self.config_data.get("cascade_haiku_model", DEFAULT_CASCADE_HAIKU_MODEL),
 
-                free_model=self.config_data.get("cascade_free_model", DEFAULT_CASCADE_FREE_MODEL),
+                free_model=self.config_data.get("cascade_free_model") or self.config_data.get("openrouter_free_model", DEFAULT_CASCADE_FREE_MODEL),
 
                 arbitrator_model=self.config_data.get("cascade_arbitrator_model", self.config_data.get("openrouter_arbitrator_model", DEFAULT_CASCADE_ARBITRATOR_MODEL)),
 
-                enable_auto_arbitrator=bool(self.config_data.get("enable_auto_arbitrator", True)),
+                enable_auto_arbitrator=arb_any,
+
+                enable_arbitrator_on_free=arb_free,
+
+                enable_arbitrator_on_paid=arb_paid,
+
+                free_primary_mode="gemini_38_then_35",
+
+                paid_mode=paid_mode,
+
+                fallback_mode=fallback_mode,
 
                 quota_tracker=self.quota_tracker,
 
@@ -825,7 +874,7 @@ class BancoAlimentareApp(ctk.CTk):
 
         else:
 
-            # Predefinito: Cascata v1
+            # Predefinito: Cascata Personalizzabile a 3 Sezioni
 
             self.active_extractor = CascadeVisionExtractor(
 
@@ -837,19 +886,31 @@ class BancoAlimentareApp(ctk.CTk):
 
                 gemini_model=self.config_data.get("cascade_gemini_model", DEFAULT_CASCADE_GEMINI_MODEL),
 
-                buffer_model=self.config_data.get("cascade_buffer_model", DEFAULT_CASCADE_BUFFER_MODEL),
+                gemini_38_model=DEFAULT_CASCADE_V2_PRIMARY_MODEL,
+
+                luna_model=luna_model,
+
+                buffer_model=self.config_data.get("cascade_buffer_model") or self.config_data.get("openrouter_buffer_model", DEFAULT_CASCADE_BUFFER_MODEL),
 
                 haiku_model=self.config_data.get("cascade_haiku_model", DEFAULT_CASCADE_HAIKU_MODEL),
 
-                free_model=self.config_data.get("cascade_free_model", DEFAULT_CASCADE_FREE_MODEL),
+                free_model=self.config_data.get("cascade_free_model") or self.config_data.get("openrouter_free_model", DEFAULT_CASCADE_FREE_MODEL),
 
                 arbitrator_model=self.config_data.get("cascade_arbitrator_model", self.config_data.get("openrouter_arbitrator_model", DEFAULT_CASCADE_ARBITRATOR_MODEL)),
 
-                enable_auto_arbitrator=bool(self.config_data.get("enable_auto_arbitrator", True)),
+                enable_auto_arbitrator=arb_any,
+
+                enable_arbitrator_on_free=arb_free,
+
+                enable_arbitrator_on_paid=arb_paid,
+
+                free_primary_mode=free_mode,
+
+                paid_mode=paid_mode,
+
+                fallback_mode=fallback_mode,
 
                 quota_tracker=self.quota_tracker,
-
-                variant="v1",
 
             )
 
@@ -1615,6 +1676,16 @@ class BancoAlimentareApp(ctk.CTk):
 
         )
 
+        self.more_options_menu.add_separator()
+
+        self.more_options_menu.add_command(
+
+            label="💡  Invia Consiglio / Segnalazione...",
+
+            command=self._open_feedback_dialog
+
+        )
+
 
 
         # ==== 2. SORGENTE DATI (Cartella, File Excel, Stato Excel Aperto, Supermercato) ====
@@ -1893,7 +1964,7 @@ class BancoAlimentareApp(ctk.CTk):
 
         self.settings_btn.pack(side=tk.RIGHT)
 
-        TooltipV3(self.settings_btn, "Chiavi API, modello IA e opzioni scanner")
+        TooltipV3(self.settings_btn, "Chiavi API, modello IA, scanner, scorciatoie e consigli")
 
 
 
@@ -2973,7 +3044,25 @@ class BancoAlimentareApp(ctk.CTk):
 
             config=self.config_data,
 
+            on_trello_unlocked=self._on_welcome_trello_unlocked,
+
         )
+
+
+
+    def _on_welcome_trello_unlocked(self, trello_cfg: Dict[str, str]) -> None:
+
+        if not isinstance(trello_cfg, dict):
+
+            return
+
+        for key in ("trello_api_key", "trello_token", "trello_list_id"):
+
+            val = str(trello_cfg.get(key) or "").strip()
+
+            if val:
+
+                self.config_data[key] = val
 
 
 
@@ -3039,9 +3128,51 @@ class BancoAlimentareApp(ctk.CTk):
 
 
 
-    def _open_settings(self):
+    def _build_feedback_context(self) -> Dict[str, Any]:
 
-        SettingsDialogV3(self, self.config_data, self._apply_settings)
+        excel_file = ""
+
+        if getattr(self, "excel_mgr", None) is not None:
+
+            try:
+
+                excel_file = self.excel_mgr.get_target_filename() or ""
+
+            except Exception:
+
+                excel_file = ""
+
+        return {
+
+            "provider": self.config_data.get("active_provider", "cascade"),
+
+            "excel_file": excel_file,
+
+            "supermercato": self.supermarket_var.get().strip() if hasattr(self, "supermarket_var") else "",
+
+        }
+
+
+
+    def _open_settings(self, initial_tab: Optional[str] = None):
+
+        kwargs: Dict[str, Any] = {
+
+            "feedback_context": self._build_feedback_context(),
+
+        }
+
+        if initial_tab is not None:
+
+            kwargs["initial_tab"] = initial_tab
+
+        return SettingsDialogV3(self, self.config_data, self._apply_settings, **kwargs)
+
+
+
+    def _open_feedback_dialog(self):
+
+        return self._open_settings(initial_tab="💡 Consigli")
 
 
 
@@ -3065,6 +3196,10 @@ class BancoAlimentareApp(ctk.CTk):
 
         self._update_ia_status_ui()
 
+        if hasattr(self, "_update_scan_button_mode"):
+
+            self._update_scan_button_mode()
+
         self._setup_global_shortcuts()
 
         self._show_toast("✓ Impostazioni salvate")
@@ -3074,22 +3209,36 @@ class BancoAlimentareApp(ctk.CTk):
             b = float(self.config_data.get("image_brightness", 1.0))
             c = float(self.config_data.get("image_contrast", 1.0))
             s = float(self.config_data.get("image_sharpness", 1.0))
-            
-            # 1. Aggiorna tutti i fogli del lotto (sia immagine principale che copia IA)
+
+            tuned_paths = set()
+            cur_item = self._current_item()
+
+            # 1. Aggiorna tutti i fogli del lotto (partendo da .raw.jpg e rigenerando la copia IA dal file tarato)
             if hasattr(self, "batch_items") and self.batch_items:
-                for item in self.batch_items:
+                for idx, item in enumerate(self.batch_items):
                     if item.image_path and Path(item.image_path).exists():
-                        ScannerService.apply_tuning_to_file(Path(item.image_path), b, c, s)
-                        if item.ai_image_path and Path(item.ai_image_path).exists() and item.ai_image_path != item.image_path:
-                            ScannerService.apply_tuning_to_file(Path(item.ai_image_path), b, c, s)
+                        p = Path(item.image_path)
+                        ScannerService.apply_tuning_to_file(p, b, c, s)
+                        tuned_paths.add(str(p))
+                        try:
+                            new_ai = create_ai_optimized_copy(p, getattr(item, "preset_id", 0))
+                            item.ai_image_path = str(new_ai)
+                        except Exception:
+                            pass
+                        if getattr(self, "_strip_visible", False) and hasattr(self, "batch_strip"):
+                            self.batch_strip.refresh_item(idx, reload_image=True)
 
             # 2. Aggiorna l'immagine visualizzata a video
             if hasattr(self, "current_image_path") and self.current_image_path and Path(self.current_image_path).exists():
-                ScannerService.apply_tuning_to_file(Path(self.current_image_path), b, c, s)
+                if str(self.current_image_path) not in tuned_paths:
+                    ScannerService.apply_tuning_to_file(Path(self.current_image_path), b, c, s)
                 if hasattr(self, "image_viewer") and self.image_viewer:
                     self.image_viewer._original_cache.clear()
                     self.image_viewer._processed_cache.clear()
-                    self.image_viewer.load_image(str(self.current_image_path))
+                    self.image_viewer.load_image(
+                        str(self.current_image_path),
+                        initial_preset=getattr(cur_item, "preset_id", 0) if cur_item else 0,
+                    )
         except Exception as ex_tune:
             self.session_logger.logger.warning(f"Errore aggiornamento taratura live su immagine aperta: {ex_tune}")
 
@@ -4151,23 +4300,25 @@ class BancoAlimentareApp(ctk.CTk):
 
 
 
-        if provider == "cascade":
+        if provider in ("cascade", "cascade_v2"):
 
             st = get_pipeline_status(self.config_data)
 
             cap = st["daily_free_capacity"]
 
+            title = "🚀 Cascata Personalizzabile (3 Sezioni)" if provider == "cascade" else "⚡ Cascata v2 (Gemini 3.8 Primario)"
+
             return (
 
-                f"🚀 Architettura a Cascata Intelligente (4 Piani):\n"
+                f"{title}:\n"
 
-                f"• Piano A (Google Free): {st['phase_a_desc']}\n"
+                f"• Sezione 1 (Google Free): {st['phase_a_desc']}\n"
 
-                f"• Piano B (OpenRouter Buffer): {st['phase_b_desc']}\n"
+                f"• Sezione 2 (Pagamento OR): {st['phase_b_desc']}\n"
 
-                f"• Piano C (Paracadute Free): {st['phase_c_desc']}\n"
+                f"• Sezione 3 (Fallback Free): {st['phase_c_desc']}\n"
 
-                f"• Piano D (Arbitro Matematico): {st['phase_d_desc']}\n"
+                f"• Arbitro Matematico: {st['phase_d_desc']}\n"
 
                 f"⚡ Capacità Gratuita: {cap} schede/giorno ({st['rpm_capacity']} RPM) · 0,00 €\n"
 
@@ -4307,7 +4458,7 @@ class BancoAlimentareApp(ctk.CTk):
 
     def _open_ia_stats_dialog(self, event=None):
 
-        SettingsDialogV3(self, self.config_data, self._apply_settings, initial_tab="🚀 Flusso IA & Modelli")
+        return self._open_settings(initial_tab="🚀 Flusso IA & Modelli")
 
 
 
@@ -4327,7 +4478,7 @@ class BancoAlimentareApp(ctk.CTk):
 
             dpi = 200
 
-        return dpi, bool(cfg.get("scanner_auto_optimize", True)), cfg.get("scanner_default_source", "flatbed")
+        return dpi, False, cfg.get("scanner_default_source", "flatbed")
 
 
 
@@ -4688,6 +4839,7 @@ class BancoAlimentareApp(ctk.CTk):
     def _on_streamed_page_acquired(self, page_path: Path):
         """Streaming pipeline: appena lo scanner salva un foglio, lo inserisce subito in coda e avvia l'IA in background."""
         p_str = str(page_path)
+        raw_arch = ScannerService.get_raw_archive(page_path)
         auto_preset = bool(self.config_data.get("auto_preset_assignment", False))
         try:
             ai_path, pid, pname = prepare_scan_for_pipeline(page_path, auto_detect_preset=auto_preset)
@@ -4695,13 +4847,14 @@ class BancoAlimentareApp(ctk.CTk):
                 image_path=p_str,
                 preset_id=pid,
                 ai_image_path=str(ai_path),
+                raw_archive_path=raw_arch,
             )
             self.session_logger.logger.info(
                 f"[STREAMING SCAN] Foglio '{page_path.name}': Preparato con Preset {pid} ({pname}) -> {ai_path.name}"
             )
         except Exception as e:
             self.session_logger.logger.warning(f"[STREAMING SCAN] Errore preparazione scansione '{p_str}': {e}")
-            item = BatchItem(image_path=p_str, preset_id=0, ai_image_path=p_str)
+            item = BatchItem(image_path=p_str, preset_id=0, ai_image_path=p_str, raw_archive_path=raw_arch)
 
         if all(i.status == "written" for i in self.batch_items):
             self.batch_items = []
@@ -4790,9 +4943,13 @@ class BancoAlimentareApp(ctk.CTk):
 
         if self.current_image_path and Path(self.current_image_path).exists():
 
-            current_img = self.image_viewer.pil_image if hasattr(self, "image_viewer") else None
+            if hasattr(self, "image_viewer") and self.image_viewer and self.image_viewer.current_image_path:
 
-            FullScreenViewerDialogV3(self, str(self.current_image_path), initial_image=current_img)
+                self.image_viewer.open_fullscreen()
+
+                return
+
+            FullScreenViewerDialogV3(self, str(self.current_image_path), initial_image=None)
 
         else:
 
@@ -4809,6 +4966,58 @@ class BancoAlimentareApp(ctk.CTk):
         if 0 <= self.batch_index < len(self.batch_items):
 
             return self.batch_items[self.batch_index]
+
+        return None
+
+
+
+    def _assign_item_raw_to_market(self, item: Optional[BatchItem], market_name: Optional[str]) -> Optional[str]:
+
+        """Sposta la copia grezza dello storico in SCANSIONI/<YYYY-MM-DD>/<Supermercato>/ (o _non_riconosciuto/)."""
+
+        if item is None:
+
+            return None
+
+        raw_arch = getattr(item, "raw_archive_path", None)
+
+        if not raw_arch and getattr(item, "image_path", None):
+
+            raw_arch = ScannerService.get_raw_archive(item.image_path)
+
+        if not raw_arch:
+
+            return None
+
+        try:
+
+            clean_target = (market_name or "").strip()
+
+            moved = get_history_service().assign_raw_scan_to_supermarket(raw_arch, clean_target)
+
+            if moved:
+
+                moved_str = str(moved)
+
+                item.raw_archive_path = moved_str
+
+                item.raw_assigned_market = clean_target or "_non_riconosciuto"
+
+                if getattr(item, "image_path", None):
+
+                    ScannerService.register_raw_archive(item.image_path, moved)
+
+                return moved_str
+
+        except Exception as e:
+
+            try:
+
+                self.session_logger.logger.warning(f"[STORICO] Errore spostamento copia grezza '{raw_arch}': {e}")
+
+            except Exception:
+
+                pass
 
         return None
 
@@ -4832,6 +5041,8 @@ class BancoAlimentareApp(ctk.CTk):
 
             path_obj = Path(p)
 
+            raw_arch = ScannerService.get_raw_archive(path_obj)
+
             try:
 
                 ai_path, pid, pname = prepare_scan_for_pipeline(path_obj, auto_detect_preset=auto_preset)
@@ -4845,6 +5056,8 @@ class BancoAlimentareApp(ctk.CTk):
                         preset_id=pid,
 
                         ai_image_path=str(ai_path),
+
+                        raw_archive_path=raw_arch,
 
                     )
 
@@ -4864,7 +5077,7 @@ class BancoAlimentareApp(ctk.CTk):
 
                 )
 
-                new_items.append(BatchItem(image_path=str(p), preset_id=0, ai_image_path=str(p)))
+                new_items.append(BatchItem(image_path=str(p), preset_id=0, ai_image_path=str(p), raw_archive_path=raw_arch))
 
 
 
@@ -5125,7 +5338,7 @@ class BancoAlimentareApp(ctk.CTk):
 
         current_gen = self._extraction_generation_id
 
-
+        sent_path_holder = {"path": str(path)}
 
         def work(progress):
 
@@ -5178,6 +5391,7 @@ class BancoAlimentareApp(ctk.CTk):
 
 
             image_to_send = target.ai_image_path or path
+            sent_path_holder["path"] = str(image_to_send)
             progress("📡 Invio immagine al motore IA...")
 
             if use_strong and hasattr(extractor, "extract_with_strong_model"):
@@ -5226,21 +5440,35 @@ class BancoAlimentareApp(ctk.CTk):
 
                     else:
 
-                        # Se l'IA ha rilevato che la scheda era capovolta o se Cascade l'ha ruotata a 180° su disco, aggiorna il visore
+                        # Se l'IA ha rilevato che la scheda era capovolta o se l'estrattore ha ruotato la copia AI su disco, allinea work image, .raw.jpg e cache visore
 
-                        was_rotated = getattr(raw, "was_rotated_180", False) or getattr(raw, "scheda_capovolta", False)
+                        was_rotated_by_ext = bool(getattr(raw, "was_rotated_180", False))
+                        detected_upside_down = bool(getattr(raw, "scheda_capovolta", False))
 
-                        if was_rotated:
+                        if was_rotated_by_ext or detected_upside_down:
 
                             try:
 
-                                if getattr(raw, "scheda_capovolta", False) and not getattr(raw, "was_rotated_180", False):
+                                work_p = Path(target.image_path)
+                                sent_p = Path(sent_path_holder["path"])
+                                try:
+                                    same_file = (work_p.resolve() == sent_p.resolve())
+                                except Exception:
+                                    same_file = (os.path.abspath(str(work_p)) == os.path.abspath(str(sent_p)))
 
-                                    ScannerService.rotate_image_file_180(Path(target.image_path))
+                                if (was_rotated_by_ext and not same_file) or (detected_upside_down and not was_rotated_by_ext):
+
+                                    ScannerService.rotate_image_file_180(work_p)
 
                                 if target.preset_id is not None:
 
-                                    target.ai_image_path = str(create_ai_optimized_copy(Path(target.image_path), target.preset_id))
+                                    target.ai_image_path = str(create_ai_optimized_copy(work_p, target.preset_id))
+
+                                if hasattr(self, "image_viewer") and self.image_viewer:
+                                    for cache_key in {str(work_p), str(target.image_path)}:
+                                        self.image_viewer._original_cache.pop(cache_key, None)
+                                        self.image_viewer._processed_cache.pop(cache_key, None)
+                                        self.image_viewer._preset_state_cache.pop(cache_key, None)
 
                                 if target is self._current_item():
 
@@ -5263,6 +5491,18 @@ class BancoAlimentareApp(ctk.CTk):
                         target.raw = raw
 
                         target.status = "ready"
+
+                        # Sposta subito la scansione grezza da _da_assegnare alla cartella del supermercato rilevato
+                        try:
+                            raw_mkt = (getattr(raw, "supermercato", "") or "").strip()
+                            resolved_mkt = ""
+                            if raw_mkt:
+                                cur_fn = self.excel_mgr.get_target_filename() if hasattr(self, "excel_mgr") else None
+                                m_list = self.colletta_service.find_matches(raw_mkt, current_file=cur_fn, top_n=1)
+                                resolved_mkt = m_list[0]["sheet_name"] if m_list else raw_mkt
+                            self._assign_item_raw_to_market(target, resolved_mkt)
+                        except Exception:
+                            pass
 
                     self._refresh_item_badge(target)
 
@@ -5740,7 +5980,15 @@ class BancoAlimentareApp(ctk.CTk):
 
             processed.supermercato_confermato = active_sheet
 
+        try:
 
+            arch_market = active_sheet or (best_match["sheet_name"] if best_match else detected_supermarket)
+
+            self._assign_item_raw_to_market(self._current_item(), arch_market)
+
+        except Exception:
+
+            pass
 
         self.current_processed_card = processed
 
@@ -6194,7 +6442,7 @@ class BancoAlimentareApp(ctk.CTk):
 
             self.current_processed_card.supermercato_confermato = sheet
 
-
+        self._assign_item_raw_to_market(self._current_item(), sheet)
 
         if self._check_excel_status_silent():
 
@@ -8591,11 +8839,51 @@ class BancoAlimentareApp(ctk.CTk):
 
                 cur_item = self._current_item()
 
-                source_img = cur_item.image_path if cur_item else None
+                source_img = (cur_item.image_path if cur_item else None) or getattr(self, "current_image_path", None)
 
-                model_used = getattr(self.extractor, "model", "") or self.config_data.get("gemini_model", "")
+                raw_arch = getattr(cur_item, "raw_archive_path", None) if cur_item else None
 
-                get_history_service().archive_card(
+                if not raw_arch and source_img:
+
+                    raw_arch = ScannerService.get_raw_archive(source_img)
+
+                ext = getattr(self, "active_extractor", None)
+
+                model_used = (
+
+                    getattr(ext, "last_winner_model", "")
+
+                    or getattr(ext, "model", "")
+
+                    or self.config_data.get("active_provider", "")
+
+                )
+
+                raw_notes = (
+
+                    getattr(cur_item.raw, "note_o_anomalie", "")
+
+                    if cur_item and getattr(cur_item, "raw", None)
+
+                    else ""
+
+                ) or ""
+
+                if raw_notes.startswith("[") and "]" in raw_notes:
+
+                    badge = raw_notes[1:raw_notes.index("]")].strip()
+
+                    if badge:
+
+                        if model_used and model_used not in badge:
+
+                            model_used = f"{model_used} ({badge})"
+
+                        elif not model_used:
+
+                            model_used = badge
+
+                arch_res = get_history_service().archive_card(
 
                     image_path=source_img,
 
@@ -8617,7 +8905,19 @@ class BancoAlimentareApp(ctk.CTk):
 
                     session_id=getattr(self.session_logger, "session_id", ""),
 
+                    raw_archive_path=raw_arch,
+
                 )
+
+                if cur_item and arch_res and arch_res.get("raw_archive_path"):
+
+                    cur_item.raw_archive_path = arch_res["raw_archive_path"]
+
+                    cur_item.raw_assigned_market = sheet_name
+
+                    if source_img:
+
+                        ScannerService.register_raw_archive(source_img, arch_res["raw_archive_path"])
 
             except Exception as e_hist:
 

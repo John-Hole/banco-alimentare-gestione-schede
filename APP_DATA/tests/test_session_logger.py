@@ -43,7 +43,7 @@ class TestSessionLogger(unittest.TestCase):
         self.assertTrue(log_path.name.endswith(".log"))
 
     def test_log_session_start_banner(self):
-        """Verifica che il banner iniziale scriva configurazione, provider e modelli."""
+        """Verifica che il banner iniziale scriva le 3 sezioni cascata, i 2 switch arbitro, la taratura e mascheri le chiavi."""
         logger = get_session_logger()
         cfg = {
             "active_provider": "cascade",
@@ -51,25 +51,69 @@ class TestSessionLogger(unittest.TestCase):
             "gemini_api_key_2": "AQ.TEST_KEY_GEMINI_2_LONG",
             "gemini_model": "gemini-3.5-flash-lite",
             "openrouter_api_key": "sk-or-v1-TEST_OPENROUTER_LONG",
-            "openrouter_buffer_model": "google/gemini-2.5-flash",
+            "cascade_free_primary_mode": "gemini_35",
+            "cascade_paid_mode": "haiku",
+            "cascade_fallback_mode": "nemotron_free",
             "openrouter_free_model": "nvidia/nemotron-3.5-super-vl:free",
-            "openrouter_arbitrator_model": "anthropic/claude-sonnet-5.5",
+            "cascade_arbitrator_model": "anthropic/claude-haiku-5.5",
+            "openrouter_arbitrator_model": "anthropic/claude-haiku-5.5",
+            "enable_arbitrator_on_free": True,
+            "enable_arbitrator_on_paid": False,
             "last_excel_path": "D:/test/Colletta 2025 Test.xls",
             "scanner_dpi": 300,
             "scanner_default_source": "adf",
+            "image_brightness": 1.15,
+            "image_contrast": 2.25,
+            "image_sharpness": 1.40,
         }
         logger.log_session_start(cfg)
         content = logger.read_current_log()
 
         self.assertIn("BANCO ALIMENTARE — LOG DI SESSIONE", content)
         self.assertIn("MODALITÀ PROVIDER ATTIVA: CASCADE", content)
+        self.assertIn("SEZIONE 1 - Google Free", content)
+        self.assertIn("SEZIONE 2 - OpenRouter Pagamento", content)
+        self.assertIn("SEZIONE 3 - Fallback Free OR", content)
+        self.assertIn("ARBITRO MATEMATICO", content)
+        self.assertIn("Su modelli Free: ATTIVO | Su modelli a Pagamento: DISATTIVATO", content)
         self.assertIn("gemini-3.5-flash-lite", content)
-        self.assertIn("google/gemini-2.5-flash", content)
+        self.assertIn("anthropic/claude-haiku-5.5", content)
         self.assertIn("nvidia/nemotron-3.5-super-vl:free", content)
-        self.assertIn("anthropic/claude-sonnet-5.5", content)
-        # La chiave in chiaro NON deve comparire
+        self.assertIn("Luminosità=1.15 | Contrasto=2.25 | Nitidezza=1.40", content)
+        self.assertIn(mask_api_key("AQ.TEST_KEY_GEMINI_1_LONG"), content)
+        self.assertIn(mask_api_key("AQ.TEST_KEY_GEMINI_2_LONG"), content)
+        self.assertIn(mask_api_key("sk-or-v1-TEST_OPENROUTER_LONG"), content)
+        # Le chiavi in chiaro NON devono comparire
         self.assertNotIn("TEST_KEY_GEMINI_1_LONG", content)
+        self.assertNotIn("TEST_KEY_GEMINI_2_LONG", content)
         self.assertNotIn("TEST_OPENROUTER_LONG", content)
+
+    def test_log_config_change_masks_secrets(self):
+        """Verifica che log_config_change mascheri tutte le chiavi API, token Trello e password."""
+        logger = get_session_logger()
+        secret_gem = "AIzaSySECRET_GEMINI_PLAINTEXT_VALUE_999"
+        secret_or = "sk-or-v1-SECRET_OPENROUTER_PLAINTEXT_888"
+        secret_trello_k = "trello_secret_apikey_777777"
+        secret_trello_t = "ATTA_secret_trello_token_666666"
+
+        logger.log_config_change("gemini_api_key", "", secret_gem)
+        logger.log_config_change("openrouter_api_key", secret_or, "")
+        logger.log_config_change("trello_api_key", "", secret_trello_k)
+        logger.log_config_change("trello_token", "", secret_trello_t)
+        logger.log_config_change("scanner_dpi", 200, 300)
+        logger.log_config_change("active_provider", "cascade", "or_haiku_low")
+
+        content = logger.read_current_log()
+        self.assertNotIn(secret_gem, content)
+        self.assertNotIn(secret_or, content)
+        self.assertNotIn(secret_trello_k, content)
+        self.assertNotIn(secret_trello_t, content)
+        self.assertIn(mask_api_key(secret_gem), content)
+        self.assertIn(mask_api_key(secret_or), content)
+        self.assertIn(mask_api_key(secret_trello_k), content)
+        self.assertIn(mask_api_key(secret_trello_t), content)
+        self.assertIn("Aggiornato parametro 'scanner_dpi': '200' -> '300'", content)
+        self.assertIn("Aggiornato parametro 'active_provider': 'cascade' -> 'or_haiku_low'", content)
 
     def test_log_ai_calls_and_results(self):
         """Verifica la corretta registrazione di chiamate a modelli specifici ed esiti."""

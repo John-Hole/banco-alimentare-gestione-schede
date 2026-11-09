@@ -160,13 +160,43 @@ class SessionLogger:
     # -------------------------------------------------------------------------
     def log_session_start(self, config_data: Dict[str, Any]):
         """Scrive l'intestazione iniziale formattata con tutti i modelli e le configurazioni."""
-        prov = config_data.get("active_provider", "cascade")
+        from ..config import (
+            CASCADE_FREE_MODES,
+            CASCADE_PAID_MODES,
+            CASCADE_FALLBACK_MODES,
+            DEFAULT_CASCADE_FREE_PRIMARY_MODE,
+            DEFAULT_CASCADE_PAID_MODE,
+            DEFAULT_CASCADE_FALLBACK_MODE,
+            DEFAULT_CASCADE_ARBITRATOR_MODEL,
+            DEFAULT_CASCADE_FREE_MODEL,
+        )
+
+        prov = str(config_data.get("active_provider", "cascade") or "cascade")
         k1 = config_data.get("gemini_api_key", "")
         k2 = config_data.get("gemini_api_key_2", "")
         or_key = config_data.get("openrouter_api_key", "")
         excel_path = config_data.get("last_excel_path", "")
         dpi = config_data.get("scanner_dpi", 200)
-        source = config_data.get("scanner_default_source", "flatbed")
+        source = str(config_data.get("scanner_default_source", "adf") or "adf")
+
+        free_mode = config_data.get("cascade_free_primary_mode", DEFAULT_CASCADE_FREE_PRIMARY_MODE)
+        paid_mode = config_data.get("cascade_paid_mode", DEFAULT_CASCADE_PAID_MODE)
+        fallback_mode = config_data.get("cascade_fallback_mode", DEFAULT_CASCADE_FALLBACK_MODE)
+        arb_model = (
+            config_data.get("cascade_arbitrator_model")
+            or config_data.get("openrouter_arbitrator_model")
+            or DEFAULT_CASCADE_ARBITRATOR_MODEL
+        )
+        arb_free = bool(config_data.get("enable_arbitrator_on_free", config_data.get("enable_auto_arbitrator", True)))
+        arb_paid = bool(config_data.get("enable_arbitrator_on_paid", False))
+
+        free_label = CASCADE_FREE_MODES.get(free_mode, free_mode)
+        paid_label = CASCADE_PAID_MODES.get(paid_mode, paid_mode)
+        fb_label = CASCADE_FALLBACK_MODES.get(fallback_mode, config_data.get("openrouter_free_model", DEFAULT_CASCADE_FREE_MODEL))
+
+        bri = float(config_data.get("image_brightness", 1.0))
+        con = float(config_data.get("image_contrast", 1.0))
+        sha = float(config_data.get("image_sharpness", 1.0))
 
         banner = [
             "=" * 82,
@@ -177,18 +207,18 @@ class SessionLogger:
             f"   Piattaforma     : Python {platform.python_version()} su {platform.system()} {platform.release()}",
             "-" * 82,
             f"   MODALITÀ PROVIDER ATTIVA: {prov.upper()}",
-            "   CONFIGURAZIONE MODELLI & CHIAVI:",
-            f"     • [PIANO A - Google Gemini] Modello : {config_data.get('gemini_model', 'gemini-3.5-flash-lite')}",
-            f"                                 Chiave 1: {mask_api_key(k1)}",
-            f"                                 Chiave 2: {mask_api_key(k2)}",
-            f"     • [PIANO B - OpenRouter Buffer]     : {config_data.get('openrouter_buffer_model', 'google/gemini-2.5-flash')}",
-            f"     • [PIANO C - OpenRouter Free]       : {config_data.get('openrouter_free_model', 'nvidia/nemotron-3.5-super-vl:free')}",
-            f"     • [PIANO D - Arbitro Matematico]   : {config_data.get('openrouter_arbitrator_model', 'anthropic/claude-sonnet-5.5')}",
+            "   CASCATA IA PERSONALIZZABILE (3 SEZIONI):",
+            f"     • [SEZIONE 1 - Google Free]         : {free_label}",
+            f"                                 Chiave 1: {mask_api_key(k1)} | Chiave 2: {mask_api_key(k2)}",
+            f"     • [SEZIONE 2 - OpenRouter Pagamento]: {paid_label}",
+            f"     • [SEZIONE 3 - Fallback Free OR]    : {fb_label} ({config_data.get('openrouter_free_model', DEFAULT_CASCADE_FREE_MODEL)})",
+            f"     • [ARBITRO MATEMATICO]              : {arb_model}",
+            f"       -> Su modelli Free: {'ATTIVO' if arb_free else 'DISATTIVATO'} | Su modelli a Pagamento: {'ATTIVO' if arb_paid else 'DISATTIVATO'}",
             f"                                 Chiave OR: {mask_api_key(or_key)}",
-            f"     • [MODALITÀ XIAOMI / OPENROUTER]    : {config_data.get('openrouter_model', 'xiaomi/mimo-v2.6-flash')}",
+            f"     • [MODALITÀ SINGOLA]                : Gemini={config_data.get('gemini_model', 'gemini-3.5-flash-lite')} | OR={config_data.get('openrouter_model', 'anthropic/claude-haiku-5.5')}",
             "-" * 82,
             f"   SORGENTE DATI EXCEL : {Path(excel_path).name if excel_path else '[Nessun file aperto]'}",
-            f"   OPZIONI SCANNER     : Sorgente={source.upper()} | Risoluzione={dpi} DPI | Auto-ottimizza={config_data.get('scanner_auto_optimize', True)}",
+            f"   OPZIONI SCANNER     : Sorgente={source.upper()} | Risoluzione={dpi} DPI | Luminosità={bri:.2f} | Contrasto={con:.2f} | Nitidezza={sha:.2f}",
             "=" * 82,
         ]
         text_banner = "\n" + "\n".join(banner) + "\n"
@@ -332,7 +362,13 @@ class SessionLogger:
 
     def log_config_change(self, key: str, old_val: Any, new_val: Any):
         """Registra modifiche di configurazione apportate dall'utente durante l'esecuzione."""
-        self.logger.info(f"[CONFIG] Aggiornato parametro '{key}': '{old_val}' -> '{new_val}'")
+        lk = str(key or "").lower()
+        if any(s in lk for s in ("key", "token", "secret", "password", "pwd", "auth")):
+            safe_old = mask_api_key(str(old_val)) if old_val else "[NON CONFIGURATA]"
+            safe_new = mask_api_key(str(new_val)) if new_val else "[NON CONFIGURATA]"
+            self.logger.info(f"[CONFIG] Aggiornato parametro '{key}': '{safe_old}' -> '{safe_new}'")
+        else:
+            self.logger.info(f"[CONFIG] Aggiornato parametro '{key}': '{old_val}' -> '{new_val}'")
         self.sync_latest_pointer()
 
     def log_archive_event(self, action: str, details: str = ""):

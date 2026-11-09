@@ -1,0 +1,27 @@
+name: 💡 Suggerimento / Nuova Funzionalità
+description: Proponi un miglioramento per l'applicazione della Colletta Alimentare
+title: "[Suggerimento]: "
+labels: ["enhancement"]
+body:
+  - type: input
+    id: autore
+    attributes:
+      label: Nome (opzionale)
+      placeholder: "Es. Mario / Postazione 2"
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area dell'applicazione
+      options:
+        - Lettura IA / Riconoscimento Numeri
+        - Scanner / Immagini / Contrasto
+        - File Excel e Validazione
+        - Interfaccia / Scorciatoie
+        - Altro
+  - type: textarea
+    id: descrizione
+    attributes:
+      label: Cosa miglioreresti o aggiungeresti?
+      placeholder: Descrivi in poche parole cosa vorresti vedere nell'app...
+    validations:
+      required: true

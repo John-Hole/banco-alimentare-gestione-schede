@@ -475,11 +475,17 @@ class ImageViewerV3(ctk.CTkFrame):
             except Exception:
                 pass
 
-    def _persist_rotation(self):
+    def _persist_rotation(self, sync_raw_rotation_ccw: Optional[int] = None):
         """Salva su disco l'originale ruotato (la rotazione è permanente, i preset no) e aggiorna le cache."""
         if not self._original_pil_image or not self.current_image_path:
             return
         self._original_pil_image.save(str(self.current_image_path), format="JPEG", quality=95)
+        if sync_raw_rotation_ccw is not None:
+            try:
+                from ..scanner.scanner_service import ScannerService
+                ScannerService.rotate_sibling_raw_backup(self.current_image_path, sync_raw_rotation_ccw)
+            except Exception:
+                pass
         key = str(self.current_image_path)
         try:
             self._original_pil_image._ba_mtime = self.current_image_path.stat().st_mtime
@@ -534,7 +540,7 @@ class ImageViewerV3(ctk.CTkFrame):
                 self._base_processed_image = self._base_processed_image.rotate(-degrees, expand=True)
             self._offset_x = 0
             self._offset_y = 0
-            self._persist_rotation()
+            self._persist_rotation(sync_raw_rotation_ccw=-degrees)
             return True
         except Exception as e:
             try:
@@ -865,7 +871,28 @@ class ImageViewerV3(ctk.CTkFrame):
 
     def open_fullscreen(self):
         if self.current_image_path and self.current_image_path.exists():
-            FullScreenViewerDialogV3(self.winfo_toplevel(), str(self.current_image_path), initial_image=self.pil_image)
+            target_path = self.current_image_path
+            def _after_fs_rotate():
+                if not target_path:
+                    return
+                key = str(target_path)
+                self._original_cache.pop(key, None)
+                self._processed_cache.pop(key, None)
+                self._preset_state_cache.pop(key, None)
+                if self.current_image_path and str(self.current_image_path) == key:
+                    self.load_image(target_path, initial_preset=self._active_preset)
+                if self.on_image_changed_callback:
+                    try:
+                        self.on_image_changed_callback(target_path)
+                    except Exception:
+                        pass
+            FullScreenViewerDialogV3(
+                self.winfo_toplevel(),
+                str(self.current_image_path),
+                initial_image=self.pil_image,
+                persist_rotation=True,
+                on_rotated=_after_fs_rotate,
+            )
         else:
             messagebox.showinfo("Nessuna Immagine", "Acquisisci o carica prima una scheda.", parent=self)
 
@@ -1228,7 +1255,14 @@ class QuickEditBoxDialogV3(ctk.CTkToplevel):
 class FullScreenViewerDialogV3(ctk.CTkToplevel):
     """Ispezione a tutto schermo del documento con controlli zoom e tastiera."""
 
-    def __init__(self, parent, image_path: str, initial_image: Optional[Image.Image] = None):
+    def __init__(
+        self,
+        parent,
+        image_path: str,
+        initial_image: Optional[Image.Image] = None,
+        persist_rotation: bool = True,
+        on_rotated: Optional[Callable[[], None]] = None,
+    ):
         super().__init__(parent)
         self.title("Ispezione Documento — (Premi Esc per uscire)")
         self.geometry("1100x800")
@@ -1241,6 +1275,8 @@ class FullScreenViewerDialogV3(ctk.CTkToplevel):
         self.grab_set()
 
         self.image_path = Path(image_path)
+        self.persist_rotation = bool(persist_rotation)
+        self._on_rotated = on_rotated
         self.pil_image: Optional[Image.Image] = None
         self.tk_image: Optional[ImageTk.PhotoImage] = None
         self.zoom_level = 1.0
@@ -1304,8 +1340,24 @@ class FullScreenViewerDialogV3(ctk.CTkToplevel):
         if not self.pil_image:
             return
         self.pil_image = self.pil_image.rotate(-90, expand=True)
-        to_save = self.pil_image if self.pil_image.mode == "RGB" else self.pil_image.convert("RGB")
-        to_save.save(str(self.image_path), format="JPEG", quality=95)
+        if self.persist_rotation:
+            try:
+                if self.image_path.exists() and self.image_path.is_file():
+                    with Image.open(self.image_path) as disk_im:
+                        disk_im.load()
+                        rot_disk = disk_im.rotate(-90, expand=True)
+                        if rot_disk.mode != "RGB":
+                            rot_disk = rot_disk.convert("RGB")
+                        rot_disk.save(str(self.image_path), format="JPEG", quality=95)
+                else:
+                    to_save = self.pil_image if self.pil_image.mode == "RGB" else self.pil_image.convert("RGB")
+                    to_save.save(str(self.image_path), format="JPEG", quality=95)
+                from ..scanner.scanner_service import ScannerService
+                ScannerService.rotate_sibling_raw_backup(self.image_path, -90)
+                if self._on_rotated:
+                    self._on_rotated()
+            except Exception as e:
+                print(f"Errore rotazione fullscreen: {e}")
         self._fit_to_screen()
 
     def _on_mousewheel(self, event):

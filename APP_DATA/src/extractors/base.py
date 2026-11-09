@@ -3,7 +3,7 @@
 import json
 import re
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..models import RawCardExtraction, DeclaredTotals, BoxItem
 from ..config import CATEGORIES, normalize_category_name
@@ -212,14 +212,74 @@ class BaseVisionExtractor(ABC):
         s = re.sub(r"\]\s*\[", "],[", s)
         # 6. Rimuovi eventuali trailing commas create dalle sostituzioni precedenti
         s = re.sub(r",\s*([}\]])", r"\1", s)
-        # 7. Chiusura automatica di parentesi non bilanciate se l'output e' stato troncato
-        open_curlies = s.count("{") - s.count("}")
-        open_brackets = s.count("[") - s.count("]")
-        if open_brackets > 0:
-            s += "]" * open_brackets
-        if open_curlies > 0:
-            s += "}" * open_curlies
+        # 7. Chiusura automatica in ordine LIFO di parentesi non bilanciate se l'output e' stato troncato
+        stack: List[str] = []
+        in_str = False
+        esc = False
+        for ch in s:
+            if esc:
+                esc = False
+                continue
+            if ch == "\\" and in_str:
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == "{":
+                stack.append("}")
+            elif ch == "[":
+                stack.append("]")
+            elif ch in ("}", "]") and stack and stack[-1] == ch:
+                stack.pop()
+        if stack:
+            s = re.sub(r",\s*$", "", s.rstrip())
+            s += "".join(reversed(stack))
         return s
+
+    _NORMAL_FINISH_REASONS = frozenset({
+        "",
+        "STOP",
+        "END_TURN",
+        "FINISH_REASON_UNSPECIFIED",
+        "COMPLETED",
+    })
+
+    @staticmethod
+    def _has_unclosed_json_delimiters(text: str) -> bool:
+        """Verifica se il testo JSON presenta stringhe o parentesi non chiuse (segno di troncamento)."""
+        if not text:
+            return False
+        s = text.replace("\r\n", "\n")
+        s = re.sub(r"//.*?\n", "\n", s)
+        s = re.sub(r"/\*.*?\*/", "", s, flags=re.DOTALL)
+        curly_depth = 0
+        bracket_depth = 0
+        in_string = False
+        escaped = False
+        for ch in s:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\" and in_string:
+                escaped = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                curly_depth += 1
+            elif ch == "}":
+                curly_depth -= 1
+            elif ch == "[":
+                bracket_depth += 1
+            elif ch == "]":
+                bracket_depth -= 1
+        return in_string or curly_depth > 0 or bracket_depth > 0
 
     @classmethod
     def _extract_via_regex(cls, text: str) -> Optional[RawCardExtraction]:
@@ -282,17 +342,18 @@ class BaseVisionExtractor(ABC):
                 numero_scheda=num_scheda,
                 righe_scatole=righe,
                 totali_dichiarati=totali,
-                note_o_anomalie="[Recupero euristico da sintassi JSON imperfetta]"
+                note_o_anomalie="[Recupero euristico da sintassi JSON imperfetta]",
+                is_incomplete=True,
             )
         return None
 
     @classmethod
     def is_valid_raw_extraction(cls, raw: Optional[RawCardExtraction]) -> bool:
-        """Verifica se l'estrazione ottenuta e' valida o se contiene un errore fatale."""
+        """Verifica se l'estrazione ottenuta e' valida, completa e priva di troncamenti o errori fatali."""
         if raw is None:
             return False
-        if raw.righe_scatole and len(raw.righe_scatole) > 0:
-            return True
+        if getattr(raw, "is_incomplete", False):
+            return False
         err_note = (raw.note_o_anomalie or "").lower()
         fatal_terms = (
             "impossibile interpretare json",
@@ -303,16 +364,29 @@ class BaseVisionExtractor(ABC):
             "jsondecodeerror",
             "delimiter",
             "falliti",
+            "risposta troncata",
+            "json troncato",
+            "recupero euristico da sintassi json imperfetta",
         )
         if any(term in err_note for term in fatal_terms):
             return False
         return True
 
     @classmethod
-    def parse_json_response(cls, raw_text: str) -> RawCardExtraction:
+    def parse_json_response(
+        cls,
+        raw_text: str,
+        finish_reason: Optional[str] = None,
+    ) -> RawCardExtraction:
         """Pulisce eventuale markdown e converte il testo JSON in RawCardExtraction con riparazione automatica e fallback euristico."""
-        if not raw_text:
-            return RawCardExtraction(note_o_anomalie="Risposta vuota dal modello")
+        fr_upper = str(finish_reason or "").strip().upper()
+        abnormal_finish = bool(fr_upper) and (fr_upper not in cls._NORMAL_FINISH_REASONS)
+
+        if not raw_text or not raw_text.strip():
+            note = "Risposta vuota dal modello"
+            if abnormal_finish:
+                note = f"[Risposta troncata ({fr_upper})] {note}"
+            return RawCardExtraction(note_o_anomalie=note, is_incomplete=True)
 
         # Rimuovi blocchi di codice markdown ```json ... ```
         cleaned = re.sub(r"^```(?:json)?\s*", "", raw_text.strip(), flags=re.MULTILINE)
@@ -320,6 +394,7 @@ class BaseVisionExtractor(ABC):
 
         data = None
         parse_err = None
+        repaired_unclosed = False
 
         # 1. Tentativo parsing diretto
         try:
@@ -339,7 +414,9 @@ class BaseVisionExtractor(ABC):
         # 3. Tentativo con riparazione automatica della sintassi (virgole mancanti / trailing / parentesi)
         if data is None:
             try:
+                had_unclosed = cls._has_unclosed_json_delimiters(cleaned)
                 data = json.loads(cls._repair_json(cleaned))
+                repaired_unclosed = had_unclosed
             except Exception:
                 pass
 
@@ -348,7 +425,10 @@ class BaseVisionExtractor(ABC):
             match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
             if match:
                 try:
-                    data = json.loads(cls._repair_json(match.group(0)))
+                    blk = match.group(0)
+                    had_unclosed = cls._has_unclosed_json_delimiters(blk)
+                    data = json.loads(cls._repair_json(blk))
+                    repaired_unclosed = had_unclosed
                 except Exception as e:
                     parse_err = e
 
@@ -356,10 +436,16 @@ class BaseVisionExtractor(ABC):
         if data is None:
             recovered = cls._extract_via_regex(cleaned)
             if recovered and recovered.righe_scatole:
+                recovered.is_incomplete = True
+                if abnormal_finish:
+                    recovered.note_o_anomalie = f"[Risposta troncata ({fr_upper})] {recovered.note_o_anomalie or ''}".strip()
                 return recovered
-            return RawCardExtraction(note_o_anomalie=f"Impossibile interpretare JSON: {parse_err}")
+            err_note = f"Impossibile interpretare JSON: {parse_err}"
+            if abnormal_finish:
+                err_note = f"[Risposta troncata ({fr_upper})] {err_note}"
+            return RawCardExtraction(note_o_anomalie=err_note, is_incomplete=abnormal_finish)
         if not isinstance(data, dict):
-            return RawCardExtraction(note_o_anomalie="Risposta del modello in formato inatteso")
+            return RawCardExtraction(note_o_anomalie="Risposta del modello in formato inatteso", is_incomplete=True)
 
         righe = []
         totali_per_cat = {}
@@ -480,11 +566,18 @@ class BaseVisionExtractor(ABC):
                 if len(candidate_sup) >= 3:
                     supermercato_val = candidate_sup
 
+        is_incomplete = bool(abnormal_finish or repaired_unclosed)
+        if is_incomplete:
+            marker = f"[Risposta troncata ({fr_upper})]" if abnormal_finish else "[JSON troncato e richiuso automaticamente]"
+            if marker not in note_val:
+                note_val = f"{marker} {note_val}".strip()
+
         return RawCardExtraction(
             supermercato=supermercato_val,
             numero_scheda=num_scheda,
             righe_scatole=righe,
             totali_dichiarati=totali,
             note_o_anomalie=note_val or None,
-            scheda_capovolta=bool(data.get("scheda_capovolta", False))
+            scheda_capovolta=bool(data.get("scheda_capovolta", False)),
+            is_incomplete=is_incomplete,
         )

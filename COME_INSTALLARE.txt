@@ -19,9 +19,10 @@
 3. CONFIGURAZIONE DELLE CHIAVI API AL PRIMO AVVIO
    Alla prima apertura comparirà la finestra di benvenuto:
    - OPZIONE A (Sblocco Rapido con Password):
-     Inserisci la password del profilo nel riquadro "🔐 Sblocco Rapido Profilo Giovanni"
-     e premi Invio (o clicca "Sblocca Chiavi"): tutte le 3 chiavi API verranno
-     decifrate e attivate all'istante.
+     Inserisci la password del profilo nel riquadro "🔐 Sblocco Rapido Profilo"
+     e premi Invio (o clicca "Sblocca Chiavi"): verranno decifrate e attivate
+     in un colpo solo sia le chiavi IA sia l'invio automatico verso Trello
+     (nessuna impostazione manuale richiesta ai volontari).
    - OPZIONE B (Inserimento Manuale):
      Incolla la tua chiave gratuita Google AI Studio (Gemini) e/o OpenRouter.
    - Puoi anche selezionare subito la cartella con i Fogli Excel della Colletta

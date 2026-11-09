@@ -41,6 +41,8 @@ from ..config import (
 
     DEFAULT_CASCADE_GEMINI_MODEL,
 
+    DEFAULT_CASCADE_LUNA_MODEL,
+
     DEFAULT_CASCADE_BUFFER_MODEL,
 
     DEFAULT_CASCADE_FREE_MODEL,
@@ -52,6 +54,26 @@ from ..config import (
     ARBITRATOR_DISPLAY_MAP,
 
     ARBITRATOR_INV_MAP,
+
+    CASCADE_FREE_MODES,
+
+    CASCADE_FREE_INV_MAP,
+
+    CASCADE_PAID_MODES,
+
+    CASCADE_PAID_INV_MAP,
+
+    CASCADE_FALLBACK_MODES,
+
+    CASCADE_FALLBACK_INV_MAP,
+
+    DEFAULT_CASCADE_FREE_PRIMARY_MODE,
+
+    DEFAULT_CASCADE_PAID_MODE,
+
+    DEFAULT_CASCADE_FALLBACK_MODE,
+
+    SUGGERIMENTI_DIR,
 
     get_pipeline_status,
 
@@ -74,6 +96,13 @@ from ..extractors.key_tester import (
 from .async_utils import BackgroundTask
 
 from ..scanner.scanner_service import ScannerService, TEST_IMAGES_DIR
+
+from ..services.feedback_service import (
+    FeedbackService,
+    FEEDBACK_CATEGORIES,
+    get_feedback_service,
+)
+
 
 
 
@@ -975,17 +1004,55 @@ class CascadeVisualMap(ctk.CTkFrame):
 
 
 
-    def update_mode(self, provider: str, key1: Optional[str] = None, key2: Optional[str] = None, or_key: Optional[str] = None, arbitrator_model: Optional[str] = None, enable_arbitrator: Optional[bool] = None):
+    def update_mode(
+        self,
+        provider: str,
+        key1: Optional[str] = None,
+        key2: Optional[str] = None,
+        or_key: Optional[str] = None,
+        arbitrator_model: Optional[str] = None,
+        enable_arbitrator: Optional[bool] = None,
+        free_mode: Optional[str] = None,
+        paid_mode: Optional[str] = None,
+        fallback_mode: Optional[str] = None,
+        enable_arbitrator_on_free: Optional[bool] = None,
+        enable_arbitrator_on_paid: Optional[bool] = None,
+    ):
 
-        """Cambia la modalità visualizzata (v1, v2 o singolo modello) e aggiorna i grafici."""
+        """Cambia la modalità visualizzata (Cascata personalizzabile, v2 o singolo modello) e aggiorna la mappa."""
 
         self._current_provider = provider
 
-        self.update_status(key1, key2, or_key, provider=provider, arbitrator_model=arbitrator_model, enable_arbitrator=enable_arbitrator)
+        self.update_status(
+            key1,
+            key2,
+            or_key,
+            provider=provider,
+            arbitrator_model=arbitrator_model,
+            enable_arbitrator=enable_arbitrator,
+            free_mode=free_mode,
+            paid_mode=paid_mode,
+            fallback_mode=fallback_mode,
+            enable_arbitrator_on_free=enable_arbitrator_on_free,
+            enable_arbitrator_on_paid=enable_arbitrator_on_paid,
+        )
 
 
 
-    def update_status(self, key1: Optional[str] = None, key2: Optional[str] = None, or_key: Optional[str] = None, provider: Optional[str] = None, arbitrator_model: Optional[str] = None, enable_arbitrator: Optional[bool] = None):
+    def update_status(
+        self,
+        key1: Optional[str] = None,
+        key2: Optional[str] = None,
+        or_key: Optional[str] = None,
+        provider: Optional[str] = None,
+        arbitrator_model: Optional[str] = None,
+        enable_arbitrator: Optional[bool] = None,
+        free_mode: Optional[str] = None,
+        paid_mode: Optional[str] = None,
+        fallback_mode: Optional[str] = None,
+        enable_arbitrator_on_free: Optional[bool] = None,
+        enable_arbitrator_on_paid: Optional[bool] = None,
+    ):
 
         if provider is not None:
 
@@ -1017,9 +1084,37 @@ class CascadeVisualMap(ctk.CTkFrame):
 
             self._cfg["cascade_arbitrator_model"] = arbitrator_model
 
+        if free_mode is not None:
+
+            self._cfg["cascade_free_primary_mode"] = free_mode
+
+        if paid_mode is not None:
+
+            self._cfg["cascade_paid_mode"] = paid_mode
+
+        if fallback_mode is not None:
+
+            self._cfg["cascade_fallback_mode"] = fallback_mode
+
         if enable_arbitrator is not None:
 
             self._cfg["enable_auto_arbitrator"] = enable_arbitrator
+
+            if enable_arbitrator_on_free is None:
+
+                self._cfg["enable_arbitrator_on_free"] = bool(enable_arbitrator)
+
+            if not enable_arbitrator and enable_arbitrator_on_paid is None:
+
+                self._cfg["enable_arbitrator_on_paid"] = False
+
+        if enable_arbitrator_on_free is not None:
+
+            self._cfg["enable_arbitrator_on_free"] = bool(enable_arbitrator_on_free)
+
+        if enable_arbitrator_on_paid is not None:
+
+            self._cfg["enable_arbitrator_on_paid"] = bool(enable_arbitrator_on_paid)
 
 
 
@@ -1037,7 +1132,28 @@ class CascadeVisualMap(ctk.CTkFrame):
 
 
 
-        cfg = {"gemini_api_key": k1, "gemini_api_key_2": k2, "openrouter_api_key": ok}
+        eff_free = (
+            "gemini_38_then_35"
+            if prov == "cascade_v2"
+            else self._cfg.get("cascade_free_primary_mode", DEFAULT_CASCADE_FREE_PRIMARY_MODE)
+        )
+        eff_paid = self._cfg.get("cascade_paid_mode", DEFAULT_CASCADE_PAID_MODE)
+        eff_fb = self._cfg.get("cascade_fallback_mode", DEFAULT_CASCADE_FALLBACK_MODE)
+        arb_free = bool(self._cfg.get("enable_arbitrator_on_free", self._cfg.get("enable_auto_arbitrator", True)))
+        arb_paid = bool(self._cfg.get("enable_arbitrator_on_paid", False))
+        arb_m = self._cfg.get("cascade_arbitrator_model") or self._cfg.get("openrouter_arbitrator_model", DEFAULT_CASCADE_ARBITRATOR_MODEL)
+
+        cfg = {
+            "gemini_api_key": k1,
+            "gemini_api_key_2": k2,
+            "openrouter_api_key": ok,
+            "cascade_free_primary_mode": eff_free,
+            "cascade_paid_mode": eff_paid,
+            "cascade_fallback_mode": eff_fb,
+            "cascade_arbitrator_model": arb_m,
+            "enable_arbitrator_on_free": arb_free,
+            "enable_arbitrator_on_paid": arb_paid,
+        }
 
         st = get_pipeline_status(cfg)
 
@@ -1049,25 +1165,17 @@ class CascadeVisualMap(ctk.CTkFrame):
 
         has_or = st["has_openrouter"]
 
-
-
-        arb_m = self._cfg.get("cascade_arbitrator_model") or self._cfg.get("openrouter_arbitrator_model", DEFAULT_CASCADE_ARBITRATOR_MODEL)
-
-        arb_en = self._cfg.get("enable_auto_arbitrator", True)
-
         is_gem_arb = arb_m.startswith("gemini") or "gemini" in arb_m.lower()
 
         arb_has_key = has_google if is_gem_arb else has_or
 
         arb_name = ARBITRATOR_DISPLAY_MAP.get(arb_m, arb_m).split(" (")[0]
 
-
-
-        if not arb_en:
+        if not arb_free and not arb_paid:
 
             arb_title = f"ARBITRO MATEMATICO — {arb_name} (Disattivato)"
 
-            arb_desc = "Controllo automatico discrepanze disattivato. Eventuali errori delegati alla revisione manuale."
+            arb_desc = "Controllo automatico discrepanze disattivato sia su Free che dopo Pagamento."
 
             arb_st = "red"
 
@@ -1077,11 +1185,15 @@ class CascadeVisualMap(ctk.CTkFrame):
 
             arb_title = f"ARBITRO MATEMATICO — {arb_name}"
 
-            arb_desc = f"Interviene in automatico solo se le somme non tornano · Risoluzione chirurgica con {arb_name}"
+            arb_desc = (
+                f"Interviene SOLO se le somme non tornano · "
+                f"Su Gratis: {'ATTIVO' if arb_free else 'OFF'} | "
+                f"Dopo Pagamento: {'ATTIVO' if arb_paid else 'OFF'}"
+            )
 
-            arb_st = "green" if is_gem_arb else "amber"
+            arb_st = "green" if (is_gem_arb or (arb_free and not arb_paid)) else "amber"
 
-            arb_bdg = "⚖️ ARBITRO PRONTO"
+            arb_bdg = f"⚖️ FREE:{'ON' if arb_free else 'OFF'} · PAG:{'ON' if arb_paid else 'OFF'}"
 
         else:
 
@@ -1091,209 +1203,100 @@ class CascadeVisualMap(ctk.CTkFrame):
 
             arb_st = "red"
 
-            arb_bdg = "🔴 CHIAVE MANCANTE" 
+            arb_bdg = "🔴 CHIAVE MANCANTE"
 
+        if prov in ("cascade", "cascade_v2"):
 
-
-        if prov == "cascade":
-
-            # === CASCATA V1 (Standard Consigliata) ===
+            tag_v = "Cascata v2 (Gemini 3.8 Primario)" if prov == "cascade_v2" else "Cascata v1 Personalizzabile"
 
             if cap >= 1000:
 
-                self.capacity_lbl.configure(text=f"⚡ Cascata v1 Consigliata · {cap:,} schede/giorno ({rpm} RPM) · 0,00 €", text_color="#166534")
+                self.capacity_lbl.configure(text=f"⚡ {tag_v} · {cap:,} schede/giorno ({rpm} RPM) · 0,00 €", text_color="#166534")
 
                 self.banner.configure(fg_color="#dcfce7", border_color="#86efac")
 
-                self.overall_badge.configure(text="MASSIMA CAPACITÀ 🟢", fg_color="#bbf7d0", text_color="#166534")
+                self.overall_badge.configure(text="MASSIMA CAPACITÀ 🟢" if prov == "cascade" else "ALTA VELOCITÀ ⚡", fg_color="#bbf7d0" if prov == "cascade" else "#bae6fd", text_color="#166534" if prov == "cascade" else "#0369a1")
 
             elif cap == 500:
 
-                self.capacity_lbl.configure(text=f"⚡ Cascata v1 Consigliata · {cap:,} schede/giorno ({rpm} RPM) · 0,00 €", text_color="#92400e")
+                self.capacity_lbl.configure(text=f"⚡ {tag_v} · {cap:,} schede/giorno ({rpm} RPM) · 0,00 €", text_color="#92400e" if prov == "cascade" else "#0369a1")
 
-                self.banner.configure(fg_color="#fef3c7", border_color="#fde68a")
+                self.banner.configure(fg_color="#fef3c7" if prov == "cascade" else "#e0f2fe", border_color="#fde68a" if prov == "cascade" else "#bae6fd")
 
                 self.overall_badge.configure(text="BUONA CAPACITÀ 🟡", fg_color="#fde68a", text_color="#92400e")
 
             else:
 
-                self.capacity_lbl.configure(text="⚠️ Cascata v1 · Inserisci chiave Google Gemini per schede gratis", text_color="#991b1b")
+                self.capacity_lbl.configure(text=f"⚠️ {tag_v} · Inserisci chiave Google Gemini per schede gratis", text_color="#991b1b")
 
                 self.banner.configure(fg_color="#fee2e2", border_color="#fca5a5")
 
                 self.overall_badge.configure(text="INCOMPLETA 🔴", fg_color="#fecaca", text_color="#991b1b")
-
-
 
             b_txt_1 = "🟢 2/2 ATTIVE (1.000 RPD)" if st["google_count"] == 2 else ("🟡 1/2 ATTIVA (500 RPD)" if st["google_count"] == 1 else "🔴 NON ATTIVO")
 
+            free_disp = CASCADE_FREE_MODES.get(eff_free, eff_free)
+
             self._add_tier_card(
-
-                "PIANO 1 — Google Gemini 3.5 Flash-Lite (Primario Gratuito)",
-
-                "500-1.000 schede/giorno gratis · Risposta ultra-rapida <1s (0,00 €)",
-
+                f"SEZIONE 1 (GRATIS) — {free_disp}",
+                "500-1.000 schede/giorno gratis tramite API Google dirette (0,00 €)",
                 status="green" if has_google else "red",
-
-                badge_text=b_txt_1
-
+                badge_text=b_txt_1,
             )
 
-            self._add_tier_card(
+            paid_disp = CASCADE_PAID_MODES.get(eff_paid, eff_paid)
 
-                "PIANO 2 — GPT-6 Luna Low Reasoning (Buffer OpenRouter)",
+            if eff_paid == "none":
 
-                "Subentra solo su rate-limit 429 o picchi · Costo ridotto ~$0.0016/scheda (0,16 c€)",
-
-                status="green" if has_or else "red",
-
-                badge_text="🟢 BUFFER ATTIVO" if has_or else "🔴 DISATTIVATO (Richiede OpenRouter)"
-
-            )
-
-            self._add_tier_card(
-
-                "PIANO 3 — Claude Haiku 5.5 Low Reasoning (Fallback Alta Affidabilità)",
-
-                "Subentra se Luna non risponde o errore server · ~$0.0025/scheda",
-
-                status="green" if has_or else "red",
-
-                badge_text="🟢 FALLBACK PRONTO" if has_or else "🔴 DISATTIVATO"
-
-            )
-
-            self._add_tier_card(
-
-                arb_title,
-
-                arb_desc,
-
-                status=arb_st,
-
-                badge_text=arb_bdg
-
-            )
-
-            self._add_tier_card(
-
-                "MASSIMA PRECISIONE — Claude Sonnet 5.5 (Solo Manuale Protetto)",
-
-                "NON parte mai da solo: attivabile solo con Shift + Click su 'Rianalizza IA' o Ctrl+Shift+R",
-
-                status="amber" if has_or else "red",
-
-                badge_text="🔒 PROTETTO (Shift+Click)" if has_or else "🔴 NON CONFIGURATO"
-
-            )
-
-
-
-        elif prov == "cascade_v2":
-
-            # === CASCATA V2 (Gemini 3.8 Primario) ===
-
-            b_txt_1 = "🟢 2/2 ATTIVE" if st["google_count"] == 2 else ("🟡 1/2 ATTIVA" if st["google_count"] == 1 else "🔴 NON ATTIVO")
-
-            if cap >= 1000:
-
-                self.capacity_lbl.configure(text=f"⚡ Cascata v2 (Gemini 3.8 Primario) · Ultra-Velocità · {cap:,} schede/giorno gratis", text_color="#0369a1")
-
-                self.banner.configure(fg_color="#e0f2fe", border_color="#bae6fd")
-
-                self.overall_badge.configure(text="ALTA VELOCITÀ ⚡", fg_color="#bae6fd", text_color="#0369a1")
-
-            elif cap == 500:
-
-                self.capacity_lbl.configure(text=f"⚡ Cascata v2 (Gemini 3.8 Primario) · Ultra-Velocità · {cap:,} schede/giorno gratis", text_color="#0369a1")
-
-                self.banner.configure(fg_color="#e0f2fe", border_color="#bae6fd")
-
-                self.overall_badge.configure(text="BUONA CAPACITÀ 🟡", fg_color="#fde68a", text_color="#92400e")
+                self._add_tier_card(
+                    "SEZIONE 2 (A PAGAMENTO) — Disattivato dall'utente",
+                    "Nessun modello a pagamento verrà chiamato in automatico (spesa OpenRouter 0,00 €).",
+                    status="amber",
+                    badge_text="⚪ DISATTIVATO",
+                )
 
             else:
 
-                self.capacity_lbl.configure(text="⚠️ Cascata v2 · Inserisci chiave Google Gemini per schede gratis", text_color="#991b1b")
+                self._add_tier_card(
+                    f"SEZIONE 2 (A PAGAMENTO) — {paid_disp}",
+                    "Subentra solo se la Sezione 1 Google è satura o non leggibile",
+                    status="green" if has_or else "red",
+                    badge_text="🟢 ATTIVO SU FALLBACK" if has_or else "🔴 DISATTIVATO (Richiede OpenRouter)",
+                )
 
-                self.banner.configure(fg_color="#fee2e2", border_color="#fca5a5")
+            fb_disp = CASCADE_FALLBACK_MODES.get(eff_fb, eff_fb)
 
-                self.overall_badge.configure(text="INCOMPLETA 🔴", fg_color="#fecaca", text_color="#991b1b")
+            if eff_fb == "none":
 
+                self._add_tier_card(
+                    "SEZIONE 3 (FALLBACK GRATIS) — Disattivato",
+                    "Nessun modello gratuito OpenRouter di emergenza finale.",
+                    status="amber",
+                    badge_text="⚪ DISATTIVATO",
+                )
 
+            else:
 
-            self._add_tier_card(
-
-                "PIANO 1 — Google Gemini 3.8 Flash (Primario Velocità Estrema)",
-
-                "Google API Diretta · 0,00 € · Comprensione visiva avanzata e massima velocità",
-
-                status="green" if has_google else "red",
-
-                badge_text=b_txt_1
-
-            )
-
-            self._add_tier_card(
-
-                "PIANO 2 — Google Gemini 3.5 Flash-Lite (Riserva Google Gratuita)",
-
-                "Subentra immediatamente se Gemini 3.8 è saturo (503/429) · 0,00 €",
-
-                status="green" if has_google else "red",
-
-                badge_text="🟢 RISERVA GRATIS" if has_google else "🔴 NON ATTIVO"
-
-            )
+                self._add_tier_card(
+                    f"SEZIONE 3 (FALLBACK GRATIS) — {fb_disp}",
+                    "Ultimo paracadute a costo zero (0,00 €) tramite OpenRouter Free",
+                    status="green" if has_or else "red",
+                    badge_text="🟢 PARACADUTE PRONTO" if has_or else "🔴 DISATTIVATO",
+                )
 
             self._add_tier_card(
-
-                "PIANO 3 — GPT-6 Luna Low Reasoning (Buffer OpenRouter)",
-
-                "Subentra se entrambe le chiavi Google sono sature · ~$0.0016/scheda (0,16 c€)",
-
-                status="green" if has_or else "red",
-
-                badge_text="🟢 BUFFER ATTIVO" if has_or else "🔴 DISATTIVATO"
-
-            )
-
-            self._add_tier_card(
-
-                "PIANO 4 — Claude Haiku 5.5 Low Reasoning (Fallback Finale)",
-
-                "Ultimo fallback ad alta affidabilità · ~$0.0025/scheda",
-
-                status="green" if has_or else "red",
-
-                badge_text="🟢 FALLBACK PRONTO" if has_or else "🔴 DISATTIVATO"
-
-            )
-
-            self._add_tier_card(
-
                 arb_title,
-
                 arb_desc,
-
                 status=arb_st,
-
-                badge_text=arb_bdg
-
+                badge_text=arb_bdg,
             )
 
             self._add_tier_card(
-
                 "MASSIMA PRECISIONE — Claude Sonnet 5.5 (Solo Manuale Protetto)",
-
                 "NON parte mai da solo: attivabile solo con Shift + Click su 'Rianalizza IA' o Ctrl+Shift+R",
-
                 status="amber" if has_or else "red",
-
-                badge_text="🔒 PROTETTO (Shift+Click)" if has_or else "🔴 NON CONFIGURATO"
-
+                badge_text="🔒 PROTETTO (Shift+Click)" if has_or else "🔴 NON CONFIGURATO",
             )
-
-
 
         else:
 
@@ -1307,77 +1310,49 @@ class CascadeVisualMap(ctk.CTkFrame):
 
             self.overall_badge.configure(text="MODELLO SINGOLO 🎯", fg_color="#e2e8f0", text_color="#334155")
 
-
-
             is_google_model = ("gemini" in prov)
 
             active_key_ready = has_google if is_google_model else has_or
 
-
-
             self._add_tier_card(
-
                 f"🎯 MODELLO DIRETTO SELEZIONATO: {prov_name}",
-
                 "Tutte le schede vengono elaborate direttamente con questo modello. Nessun passaggio automatico.",
-
                 status="green" if active_key_ready else "red",
-
-                badge_text="🟢 ATTIVO AL 100%" if active_key_ready else "🔴 CHIAVE MANCANTE"
-
+                badge_text="🟢 ATTIVO AL 100%" if active_key_ready else "🔴 CHIAVE MANCANTE",
             )
 
             self._add_tier_card(
-
                 "⚡ Cascate e Fallback Disattivati",
-
                 "In modalità singola, in caso di errore o esaurimento crediti la lettura non tenterà altri modelli.",
-
                 status="amber",
-
-                badge_text="⚪ DISATTIVATI"
-
+                badge_text="⚪ DISATTIVATI",
             )
 
             if prov == "or_sonnet":
 
                 self._add_tier_card(
-
                     "⚠️ AVVISO COSTO — Claude Sonnet 5.5 Selezionato Diretto",
-
                     "Attenzione: ogni scheda scansionata consumerà crediti OpenRouter (~$0.04/scheda).",
-
                     status="amber",
-
-                    badge_text="⚠️ COSTI ATTIVI"
-
+                    badge_text="⚠️ COSTI ATTIVI",
                 )
 
             else:
 
                 self._add_tier_card(
-
                     arb_title,
-
                     arb_desc,
-
                     status=arb_st,
-
-                    badge_text=arb_bdg
-
+                    badge_text=arb_bdg,
                 )
 
                 self._add_tier_card(
-
                     "MASSIMA PRECISIONE — Claude Sonnet 5.5 (Solo Manuale Protetto)",
-
                     "Disponibile on-demand con Shift + Click su 'Rianalizza IA' o Ctrl+Shift+R",
-
                     status="amber" if has_or else "red",
-
-                    badge_text="🔒 PROTETTO (Shift+Click)" if has_or else "🔴 NON CONFIGURATO"
-
+                    badge_text="🔒 PROTETTO (Shift+Click)" if has_or else "🔴 NON CONFIGURATO",
                 )
+
 
 
 
@@ -1461,6 +1436,8 @@ class WelcomeSetupDialogV3(ctk.CTkToplevel):
 
         config: Optional[Dict[str, Any]] = None,
 
+        on_trello_unlocked: Optional[Callable[[Dict[str, str]], None]] = None,
+
     ):
 
         super().__init__(parent)
@@ -1473,9 +1450,13 @@ class WelcomeSetupDialogV3(ctk.CTkToplevel):
 
         self._on_saved = on_saved
 
+        self._on_trello_unlocked = on_trello_unlocked
+
         self._model = model
 
-        self._cfg = config or {}
+        self._cfg = config if config is not None else {}
+
+        self._unlocked_trello: Dict[str, str] = {}
 
         
 
@@ -1599,7 +1580,7 @@ class WelcomeSetupDialogV3(ctk.CTkToplevel):
 
 
 
-        # Box 0: Sblocco Rapido Profilo Giovanni con Password
+        # Box 0: Sblocco Rapido Profilo con Password
 
         unlock_box = ctk.CTkFrame(scroll, corner_radius=10, fg_color="#f0f9ff", border_width=1, border_color="#bae6fd")
 
@@ -1611,7 +1592,7 @@ class WelcomeSetupDialogV3(ctk.CTkToplevel):
 
             unlock_box,
 
-            text="🔐 Sblocco Rapido Profilo Giovanni (con Password)",
+            text="🔐 Sblocco Rapido Profilo (con Password)",
 
             font=("Segoe UI", 12, "bold"),
 
@@ -1625,7 +1606,7 @@ class WelcomeSetupDialogV3(ctk.CTkToplevel):
 
             unlock_box,
 
-            text="Se possiedi la password di sblocco, inseriscila qui per caricare automaticamente tutte le 3 chiavi API:",
+            text="Se possiedi la password di sblocco, inseriscila qui per attivare automaticamente chiavi IA e Trello:",
 
             font=("Segoe UI", 9),
 
@@ -1971,13 +1952,26 @@ class WelcomeSetupDialogV3(ctk.CTkToplevel):
 
         self.or_var.set(keys.get("openrouter_api_key", ""))
 
+        trello_keys = {
+            k: str(keys[k]).strip()
+            for k in ("trello_api_key", "trello_token", "trello_list_id")
+            if str(keys.get(k) or "").strip()
+        }
+        self._unlocked_trello = trello_keys
+        if trello_keys and isinstance(self._cfg, dict):
+            self._cfg.update(trello_keys)
+
         self.pwd_var.set("")
 
         self._refresh_map()
 
         self.unlock_status_lbl.configure(
 
-            text="✓ Chiavi API di Giovanni sbloccate e caricate!",
+            text=(
+                "✓ Chiavi IA e collegamento Trello sbloccati e caricati!"
+                if trello_keys
+                else "✓ Chiavi API del profilo sbloccate e caricate!"
+            ),
 
             text_color="#16a34a"
 
@@ -1985,7 +1979,11 @@ class WelcomeSetupDialogV3(ctk.CTkToplevel):
 
         self.status_lbl.configure(
 
-            text="✓ Tutte le 3 chiavi API sono pronte! Clicca 'Salva e Attiva Cascata' (o premi Invio) per iniziare.",
+            text=(
+                "✓ Tutte le chiavi IA e Trello sono pronti! Clicca 'Salva e Attiva Cascata' (o premi Invio) per iniziare."
+                if trello_keys
+                else "✓ Tutte le 3 chiavi API sono pronte! Clicca 'Salva e Attiva Cascata' (o premi Invio) per iniziare."
+            ),
 
             text_color="#16a34a"
 
@@ -2155,6 +2153,10 @@ class WelcomeSetupDialogV3(ctk.CTkToplevel):
 
         try:
 
+            if getattr(self, "_unlocked_trello", None) and self._on_trello_unlocked:
+
+                self._on_trello_unlocked(dict(self._unlocked_trello))
+
             try:
 
                 self._on_saved(k1, k2, or_key, folder)
@@ -2179,7 +2181,7 @@ WelcomeSetupDialog = WelcomeSetupDialogV3
 
 class SettingsDialog(ctk.CTkToplevel):
 
-    """Pannello Impostazioni: Chiavi API, Flusso IA & Modelli, Scanner e Laboratorio Taratura, Shortcut da Tastiera."""
+    """Pannello Impostazioni: Chiavi API, Flusso IA & Modelli, Scanner e Laboratorio Taratura, Scorciatoie, Consigli."""
 
 
 
@@ -2187,9 +2189,9 @@ class SettingsDialog(ctk.CTkToplevel):
 
     PROVIDER_DISPLAY_MAP = {
 
-        "cascade": "🚀 Cascata (Consigliata) (v1: 3.5 -> Luna -> Haiku)",
+        "cascade": "🚀 Cascata Personalizzabile (3 Sezioni — Consigliata)",
 
-        "cascade_v2": "⚡ Cascata v2 (Gemini 3.8 Primario: 3.8 -> 3.5 -> Luna -> Haiku)",
+        "cascade_v2": "⚡ Cascata v2 (Gemini 3.8 Primario: 3.8 -> 3.5 -> Haiku -> Nemotron)",
 
         "gemini_35": "🆓 Gemini 3.5 Flash-Lite (Google API Diretta — Gratis)",
 
@@ -2221,6 +2223,10 @@ class SettingsDialog(ctk.CTkToplevel):
 
         initial_tab: Optional[str] = None,
 
+        feedback_context: Optional[Dict[str, Any]] = None,
+
+        feedback_service: Optional[FeedbackService] = None,
+
     ):
 
         super().__init__(parent)
@@ -2237,6 +2243,12 @@ class SettingsDialog(ctk.CTkToplevel):
         self._on_save = on_save
 
         self._initial_tab = initial_tab
+
+        self._feedback_context = dict(feedback_context) if isinstance(feedback_context, dict) else {}
+
+        self._feedback_service = feedback_service
+
+        self.feedback_panel: Optional["_FeedbackPanel"] = None
 
         self._key_rows: List[_KeyRow] = []
 
@@ -2262,6 +2274,10 @@ class SettingsDialog(ctk.CTkToplevel):
 
         self._test_thumb_orig: Optional[Image.Image] = None
 
+        self._tuned_cache_sig = None
+
+        self._tuned_cache_img: Optional[Image.Image] = None
+
         self._ctk_thumb_orig = None
 
         self._ctk_thumb_tuned = None
@@ -2278,7 +2294,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
 
 
-        _center_modal(self, parent, 860, 760)
+        _center_modal(self, parent, 900, 760)
 
         _make_modal(self, parent)
 
@@ -2394,6 +2410,8 @@ class SettingsDialog(ctk.CTkToplevel):
 
         t_short = tabs.add("⌨️ Scorciatoie da Tastiera")
 
+        t_feedback = tabs.add("💡 Consigli")
+
 
 
         # =====================================================================
@@ -2436,6 +2454,16 @@ class SettingsDialog(ctk.CTkToplevel):
 
 
 
+        # =====================================================================
+
+        # TAB 5: CONSIGLI & SEGNALAZIONI
+
+        # =====================================================================
+
+        self._build_feedback_tab(t_feedback)
+
+
+
         if self._initial_tab:
 
             try:
@@ -2446,11 +2474,41 @@ class SettingsDialog(ctk.CTkToplevel):
 
                     init_tab = "🖨️ Scanner & Taratura"
 
+                elif ("consigl" in init_tab.lower() or "feedback" in init_tab.lower()) and init_tab not in tabs._tab_dict:
+
+                    init_tab = "💡 Consigli"
+
                 tabs.set(init_tab)
 
             except Exception:
 
                 pass
+
+    def _current_trello_merged_config(self) -> Dict[str, Any]:
+        merged = dict(self._cfg or {})
+        if hasattr(self, "trello_api_key_var"):
+            merged["trello_api_key"] = self.trello_api_key_var.get().strip()
+        if hasattr(self, "trello_token_var"):
+            merged["trello_token"] = self.trello_token_var.get().strip()
+        if hasattr(self, "trello_list_id_var"):
+            merged["trello_list_id"] = self.trello_list_id_var.get().strip()
+        return merged
+
+    def _build_feedback_tab(self, parent):
+        self.feedback_panel = _FeedbackPanel(
+            parent,
+            config=self._current_trello_merged_config(),
+            context=self._feedback_context,
+            feedback_service=self._feedback_service,
+            config_provider=self._current_trello_merged_config,
+            modal_parent=self,
+            compact=True,
+            corner_radius=10,
+            fg_color="#f8fafc",
+            border_width=1,
+            border_color=BORDER,
+        )
+        self.feedback_panel.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
 
 
 
@@ -2540,7 +2598,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
             pwd_row,
 
-            text="🔐 Sblocco Rapido Giovanni:",
+            text="🔐 Sblocco Rapido Profilo:",
 
             font=("Segoe UI", 10, "bold"),
 
@@ -2717,17 +2775,23 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _build_model_tab(self, t_model):
 
-        mode_header = ctk.CTkFrame(t_model, fg_color="transparent")
+        scroll = ctk.CTkScrollableFrame(
 
-        mode_header.pack(fill=tk.X, padx=10, pady=(6, 4))
+            t_model, corner_radius=10, fg_color="#f8fafc", border_width=1, border_color=BORDER
+
+        )
+
+        scroll.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+        mode_header = ctk.CTkFrame(scroll, fg_color="transparent")
+
+        mode_header.pack(fill=tk.X, padx=8, pady=(6, 4))
 
         ctk.CTkLabel(
 
             mode_header, text="Modello / Modalità IA Attiva:", font=("Segoe UI", 12, "bold"), text_color=TEXT
 
         ).pack(side=tk.LEFT, padx=(0, 10))
-
-
 
         cur_prov = self._cfg.get("active_provider", "cascade")
 
@@ -2747,7 +2811,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
             values=list(self.PROVIDER_DISPLAY_MAP.values()),
 
-            width=500,
+            width=480,
 
             height=34,
 
@@ -2767,27 +2831,209 @@ class SettingsDialog(ctk.CTkToplevel):
 
         self.provider_select_var.trace_add("write", lambda *_: self._on_provider_change())
 
+        # Card Personalizzazione Cascata a 3 Sezioni
 
+        custom_card = ctk.CTkFrame(
 
-        # Mappa visuale interattiva del Workflow a Piani
+            scroll, corner_radius=10, fg_color="#ffffff", border_width=1, border_color="#bae6fd"
 
-        self.cascade_map = CascadeVisualMap(t_model, config=self._cfg)
+        )
 
-        self.cascade_map.pack(fill=tk.X, padx=8, pady=(4, 6))
+        custom_card.pack(fill=tk.X, padx=8, pady=(4, 6))
 
+        ctk.CTkLabel(
 
+            custom_card,
 
-        # Card Configurazione Arbitro Matematico & Modalità Protetta Sonnet
+            text="🛠️ Personalizza la Cascata (3 Sezioni: Gratis ➔ Pagamento ➔ Fallback)",
+
+            font=("Segoe UI", 11, "bold"),
+
+            text_color="#0369a1",
+
+        ).pack(anchor="w", padx=12, pady=(8, 2))
+
+        ctk.CTkLabel(
+
+            custom_card,
+
+            text="Scegli cosa usare in ogni fase. Di default parte sempre da Gemini 3.5 gratis, usa Claude Haiku 5.5 solo se Google è saturo, e Nemotron Free come rete di sicurezza.",
+
+            font=("Segoe UI", 9),
+
+            text_color=MUTED,
+
+            justify="left",
+
+            wraplength=740,
+
+        ).pack(anchor="w", padx=12, pady=(0, 6))
+
+        sec_grid = ctk.CTkFrame(custom_card, fg_color="transparent")
+
+        sec_grid.pack(fill=tk.X, padx=12, pady=(0, 8))
+
+        sec_grid.columnconfigure(1, weight=1)
+
+        cur_free = self._cfg.get("cascade_free_primary_mode", DEFAULT_CASCADE_FREE_PRIMARY_MODE)
+
+        if cur_free not in CASCADE_FREE_MODES:
+
+            cur_free = DEFAULT_CASCADE_FREE_PRIMARY_MODE
+
+        self.cascade_free_var = tk.StringVar(value=CASCADE_FREE_MODES[cur_free])
+
+        ctk.CTkLabel(
+
+            sec_grid,
+
+            text="1. Gratuito Google:",
+
+            font=("Segoe UI", 10, "bold"),
+
+            text_color="#166534",
+
+            width=185,
+
+            anchor="w",
+
+        ).grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
+
+        self.cascade_free_menu = ctk.CTkOptionMenu(
+
+            sec_grid,
+
+            variable=self.cascade_free_var,
+
+            values=list(CASCADE_FREE_MODES.values()),
+
+            height=30,
+
+            corner_radius=7,
+
+            fg_color="#16a34a",
+
+            button_color="#15803d",
+
+            font=("Segoe UI", 10, "bold"),
+
+            command=lambda _v: self._on_provider_change(),
+
+        )
+
+        self.cascade_free_menu.grid(row=0, column=1, sticky="ew", pady=3)
+
+        cur_paid = self._cfg.get("cascade_paid_mode", DEFAULT_CASCADE_PAID_MODE)
+
+        if cur_paid not in CASCADE_PAID_MODES:
+
+            cur_paid = DEFAULT_CASCADE_PAID_MODE
+
+        self.cascade_paid_var = tk.StringVar(value=CASCADE_PAID_MODES[cur_paid])
+
+        ctk.CTkLabel(
+
+            sec_grid,
+
+            text="2. Pagamento OpenRouter:",
+
+            font=("Segoe UI", 10, "bold"),
+
+            text_color="#92400e",
+
+            width=185,
+
+            anchor="w",
+
+        ).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
+
+        self.cascade_paid_menu = ctk.CTkOptionMenu(
+
+            sec_grid,
+
+            variable=self.cascade_paid_var,
+
+            values=list(CASCADE_PAID_MODES.values()),
+
+            height=30,
+
+            corner_radius=7,
+
+            fg_color="#d97706",
+
+            button_color="#b45309",
+
+            font=("Segoe UI", 10, "bold"),
+
+            command=lambda _v: self._on_provider_change(),
+
+        )
+
+        self.cascade_paid_menu.grid(row=1, column=1, sticky="ew", pady=3)
+
+        cur_fb = self._cfg.get("cascade_fallback_mode", DEFAULT_CASCADE_FALLBACK_MODE)
+
+        if cur_fb not in CASCADE_FALLBACK_MODES:
+
+            cur_fb = DEFAULT_CASCADE_FALLBACK_MODE
+
+        self.cascade_fallback_var = tk.StringVar(value=CASCADE_FALLBACK_MODES[cur_fb])
+
+        ctk.CTkLabel(
+
+            sec_grid,
+
+            text="3. Fallback Gratuito:",
+
+            font=("Segoe UI", 10, "bold"),
+
+            text_color="#0369a1",
+
+            width=185,
+
+            anchor="w",
+
+        ).grid(row=2, column=0, sticky="w", padx=(0, 8), pady=3)
+
+        self.cascade_fallback_menu = ctk.CTkOptionMenu(
+
+            sec_grid,
+
+            variable=self.cascade_fallback_var,
+
+            values=list(CASCADE_FALLBACK_MODES.values()),
+
+            height=30,
+
+            corner_radius=7,
+
+            fg_color="#0284c7",
+
+            button_color="#0369a1",
+
+            font=("Segoe UI", 10, "bold"),
+
+            command=lambda _v: self._on_provider_change(),
+
+        )
+
+        self.cascade_fallback_menu.grid(row=2, column=1, sticky="ew", pady=3)
+
+        self.cascade_free_var.trace_add("write", lambda *_: self._on_provider_change())
+
+        self.cascade_paid_var.trace_add("write", lambda *_: self._on_provider_change())
+
+        self.cascade_fallback_var.trace_add("write", lambda *_: self._on_provider_change())
+
+        # Card Configurazione Arbitro Matematico (2 Switch Indipendenti: Gratis vs Pagamento)
 
         arbitrator_card = ctk.CTkFrame(
 
-            t_model, corner_radius=10, fg_color="#fffbeb", border_width=1, border_color="#fde68a"
+            scroll, corner_radius=10, fg_color="#fffbeb", border_width=1, border_color="#fde68a"
 
         )
 
         arbitrator_card.pack(fill=tk.X, padx=8, pady=(4, 6))
-
-
 
         arb_header = ctk.CTkFrame(arbitrator_card, fg_color="transparent")
 
@@ -2797,15 +3043,13 @@ class SettingsDialog(ctk.CTkToplevel):
 
             arb_header,
 
-            text="⚖️ Modello per l'Arbitro Matematico (Controllo Somme):",
+            text="⚖️ Modello per l'Arbitro Matematico:",
 
             font=("Segoe UI", 11, "bold"),
 
             text_color="#92400e",
 
         ).pack(side=tk.LEFT)
-
-
 
         cur_arb = self._cfg.get("cascade_arbitrator_model") or self._cfg.get("openrouter_arbitrator_model", DEFAULT_CASCADE_ARBITRATOR_MODEL)
 
@@ -2817,8 +3061,6 @@ class SettingsDialog(ctk.CTkToplevel):
 
         self.arbitrator_model_var = tk.StringVar(value=init_arb_disp)
 
-
-
         self.arbitrator_option_menu = ctk.CTkOptionMenu(
 
             arb_header,
@@ -2827,7 +3069,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
             values=list(ARBITRATOR_DISPLAY_MAP.values()),
 
-            width=430,
+            width=420,
 
             height=32,
 
@@ -2845,9 +3087,17 @@ class SettingsDialog(ctk.CTkToplevel):
 
         self.arbitrator_option_menu.pack(side=tk.RIGHT)
 
+        default_arb_free = bool(self._cfg.get("enable_arbitrator_on_free", self._cfg.get("enable_auto_arbitrator", True)))
 
+        default_arb_paid = bool(self._cfg.get("enable_arbitrator_on_paid", False))
 
-        self.enable_arbitrator_var = tk.BooleanVar(value=bool(self._cfg.get("enable_auto_arbitrator", True)))
+        self.enable_arbitrator_on_free_var = tk.BooleanVar(value=default_arb_free)
+
+        self.enable_arbitrator_on_paid_var = tk.BooleanVar(value=default_arb_paid)
+
+        # Alias retrocompatibile verso lo switch principale
+
+        self.enable_arbitrator_var = self.enable_arbitrator_on_free_var
 
         arb_sw_frame = ctk.CTkFrame(arbitrator_card, fg_color="transparent")
 
@@ -2857,9 +3107,9 @@ class SettingsDialog(ctk.CTkToplevel):
 
             arb_sw_frame,
 
-            text="Attiva Arbitro Automatico quando le somme non tornano (Scatole vs Totale Dichiarato a fondo foglio)",
+            text="Attiva Arbitro AI quando il modello GRATUITO (Gemini / Nemotron) ha discrepanze nelle somme (Consigliato)",
 
-            variable=self.enable_arbitrator_var,
+            variable=self.enable_arbitrator_on_free_var,
 
             font=("Segoe UI", 10, "bold"),
 
@@ -2867,29 +3117,49 @@ class SettingsDialog(ctk.CTkToplevel):
 
             command=self._on_arbitrator_change,
 
+        ).pack(anchor="w", pady=(0, 3))
+
+        ctk.CTkSwitch(
+
+            arb_sw_frame,
+
+            text="Attiva Arbitro AI anche quando il modello A PAGAMENTO (Haiku / Luna) ha discrepanze (Doppio costo se attivo)",
+
+            variable=self.enable_arbitrator_on_paid_var,
+
+            font=("Segoe UI", 10, "bold"),
+
+            text_color="#92400e",
+
+            command=self._on_arbitrator_change,
+
         ).pack(anchor="w")
-
-
 
         ctk.CTkLabel(
 
             arbitrator_card,
 
-            text="• Chi controlla: il modello scelto interviene solo ed esclusivamente se c'è un'incongruenza sulle somme (non consuma chiamate sulle schede perfette).\n"
+            text="• Come funziona: l'Arbitro interviene SOLO se le righe non tornano con il totale dichiarato a fondo foglio (zero costi extra sulle schede perfette).\n"
 
-                 "• Claude Sonnet 5.5 protetto: attivabile manualmente per l'intera scheda con Shift + Click su '⚡ Rianalizza IA' o Ctrl+Shift+R.",
+                 "• Tenendo il secondo switch spento, se risponde già Claude Haiku/Luna l'app mostra gli avvisi gialli/rossi senza pagare un secondo passaggio IA.\n"
 
-            font=("Segoe UI", 10),
+                 "• Claude Sonnet 5.5 protetto: attivabile manualmente in qualsiasi momento con Shift + Click su '⚡ Rianalizza IA' o Ctrl+Shift+R.",
+
+            font=("Segoe UI", 9),
 
             text_color="#78350f",
 
             justify="left",
 
-            wraplength=760,
+            wraplength=740,
 
-        ).pack(anchor="w", padx=12, pady=(0, 6))
+        ).pack(anchor="w", padx=12, pady=(2, 8))
 
+        # Mappa visuale interattiva del Workflow a Piani
 
+        self.cascade_map = CascadeVisualMap(scroll, config=self._cfg)
+
+        self.cascade_map.pack(fill=tk.X, padx=8, pady=(4, 6))
 
         # Variabili mantenute per compatibilità salvataggio config
 
@@ -2901,11 +3171,9 @@ class SettingsDialog(ctk.CTkToplevel):
 
         self.cross_fallback_var = tk.BooleanVar(value=bool(self._cfg.get("fallback_to_openrouter", True)))
 
+        adv_frame = ctk.CTkFrame(scroll, fg_color="transparent")
 
-
-        adv_frame = ctk.CTkFrame(t_model, fg_color="transparent")
-
-        adv_frame.pack(fill=tk.X, padx=10, pady=(2, 2))
+        adv_frame.pack(fill=tk.X, padx=10, pady=(2, 4))
 
         ctk.CTkSwitch(
 
@@ -2923,7 +3191,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
             adv_frame,
 
-            text="Usa il paracadute OpenRouter (Luna / Haiku / Nemotron) se le chiavi Google sono temporaneamente sature",
+            text="Usa il paracadute OpenRouter (Haiku / Luna / Nemotron) se le chiavi Google sono temporaneamente sature",
 
             variable=self.cross_fallback_var,
 
@@ -2931,13 +3199,299 @@ class SettingsDialog(ctk.CTkToplevel):
 
         ).pack(anchor="w", pady=2)
 
+        # Card Integrazione Trello per 💡 Consigli (badge fisso + Opzioni Avanzate chiuse di default)
 
+        trello_card = ctk.CTkFrame(
+
+            scroll, corner_radius=10, fg_color="#ffffff", border_width=1, border_color="#cbd5e1"
+
+        )
+
+        trello_card.pack(fill=tk.X, padx=8, pady=(6, 8))
+
+        ctk.CTkLabel(
+
+            trello_card,
+
+            text="📌 Destinazione Consigli & Segnalazioni (Trello)",
+
+            font=("Segoe UI", 11, "bold"),
+
+            text_color="#0f172a",
+
+        ).pack(anchor="w", padx=12, pady=(8, 4))
+
+        self.trello_api_key_var = tk.StringVar(value=str(self._cfg.get("trello_api_key", "") or ""))
+
+        self.trello_token_var = tk.StringVar(value=str(self._cfg.get("trello_token", "") or ""))
+
+        self.trello_list_id_var = tk.StringVar(value=str(self._cfg.get("trello_list_id", "") or ""))
+
+        self._trello_token_shown = False
+
+        self._trello_adv_expanded = False
+
+        self.trello_status_banner = ctk.CTkFrame(
+
+            trello_card, corner_radius=8, fg_color="#f0fdf4", border_width=1, border_color="#86efac"
+
+        )
+
+        self.trello_status_banner.pack(fill=tk.X, padx=12, pady=(0, 4))
+
+        self.trello_status_lbl = ctk.CTkLabel(
+
+            self.trello_status_banner,
+
+            text="",
+
+            font=("Segoe UI", 10, "bold"),
+
+            text_color="#166534",
+
+            anchor="w",
+
+            justify="left",
+
+            wraplength=710,
+
+        )
+
+        self.trello_status_lbl.pack(fill=tk.X, padx=10, pady=6)
+
+        self.trello_info_lbl = ctk.CTkLabel(
+
+            trello_card,
+
+            text="Configurazione gestita centralmente: nessun dato manuale richiesto agli operatori. "
+
+                 "Ogni consiglio viene salvato anche nella checklist locale V4/SUGGERIMENTI/.",
+
+            font=("Segoe UI", 9),
+
+            text_color=MUTED,
+
+            justify="left",
+
+            wraplength=730,
+
+        )
+
+        self.trello_info_lbl.pack(anchor="w", padx=12, pady=(0, 6))
+
+        adv_toggle_row = ctk.CTkFrame(trello_card, fg_color="transparent")
+
+        adv_toggle_row.pack(fill=tk.X, padx=12, pady=(0, 8))
+
+        self.trello_adv_toggle_btn = ctk.CTkButton(
+
+            adv_toggle_row,
+
+            text="▶ Opzioni Avanzate Trello (Solo Admin)",
+
+            width=250,
+
+            height=26,
+
+            corner_radius=6,
+
+            fg_color="#f1f5f9",
+
+            hover_color="#e2e8f0",
+
+            text_color="#475569",
+
+            font=("Segoe UI", 9, "bold"),
+
+            anchor="w",
+
+            command=self._toggle_trello_advanced,
+
+        )
+
+        self.trello_adv_toggle_btn.pack(side=tk.LEFT)
+
+        t_grid = ctk.CTkFrame(trello_card, fg_color="transparent")
+
+        self.trello_adv_frame = t_grid
+
+        # Chiuso/nascosto di default all'apertura: viene mostrato solo cliccando su Opzioni Avanzate
+
+        t_grid.columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(t_grid, text="Trello API Key:", font=("Segoe UI", 10, "bold"), text_color=TEXT, width=130, anchor="w").grid(row=0, column=0, sticky="w", pady=3)
+
+        self.trello_api_key_entry = ctk.CTkEntry(
+
+            t_grid, textvariable=self.trello_api_key_var, height=28, corner_radius=6,
+
+            placeholder_text="Opzionale — da https://trello.com/power-ups/admin",
+
+        )
+
+        self.trello_api_key_entry.grid(row=0, column=1, columnspan=2, sticky="ew", pady=3)
+
+        ctk.CTkLabel(t_grid, text="Trello Token:", font=("Segoe UI", 10, "bold"), text_color=TEXT, width=130, anchor="w").grid(row=1, column=0, sticky="w", pady=3)
+
+        self.trello_token_entry = ctk.CTkEntry(
+
+            t_grid, textvariable=self.trello_token_var, show="•", height=28, corner_radius=6,
+
+            placeholder_text="Opzionale — token OAuth personale",
+
+        )
+
+        self.trello_token_entry.grid(row=1, column=1, sticky="ew", padx=(0, 6), pady=3)
+
+        self._trello_eye_btn = ctk.CTkButton(
+
+            t_grid, text="👁️", width=36, height=28, corner_radius=6,
+
+            fg_color="#f1f5f9", hover_color="#e2e8f0", text_color=TEXT,
+
+            command=self._toggle_trello_token_vis,
+
+        )
+
+        self._trello_eye_btn.grid(row=1, column=2, pady=3)
+
+        ctk.CTkLabel(t_grid, text="ID Lista Trello:", font=("Segoe UI", 10, "bold"), text_color=TEXT, width=130, anchor="w").grid(row=2, column=0, sticky="w", pady=3)
+
+        self.trello_list_id_entry = ctk.CTkEntry(
+
+            t_grid, textvariable=self.trello_list_id_var, height=28, corner_radius=6,
+
+            placeholder_text="Opzionale — ID della colonna/lista di destinazione",
+
+        )
+
+        self.trello_list_id_entry.grid(row=2, column=1, columnspan=2, sticky="ew", pady=3)
+
+        self.trello_api_key_var.trace_add("write", lambda *_: self._refresh_trello_status_banner())
+
+        self.trello_token_var.trace_add("write", lambda *_: self._refresh_trello_status_banner())
+
+        self.trello_list_id_var.trace_add("write", lambda *_: self._refresh_trello_status_banner())
+
+        self._refresh_trello_status_banner()
+
+    def _toggle_trello_advanced(self):
+
+        if not hasattr(self, "trello_adv_frame"):
+
+            return
+
+        self._trello_adv_expanded = not getattr(self, "_trello_adv_expanded", False)
+
+        try:
+
+            if self._trello_adv_expanded:
+
+                self.trello_adv_frame.pack(fill=tk.X, padx=12, pady=(0, 8))
+
+                if hasattr(self, "trello_adv_toggle_btn"):
+
+                    self.trello_adv_toggle_btn.configure(text="▼ Opzioni Avanzate Trello (Solo Admin)")
+
+            else:
+
+                self.trello_adv_frame.pack_forget()
+
+                if hasattr(self, "trello_adv_toggle_btn"):
+
+                    self.trello_adv_toggle_btn.configure(text="▶ Opzioni Avanzate Trello (Solo Admin)")
+
+        except Exception:
+
+            pass
+
+    def _refresh_trello_status_banner(self):
+
+        if not hasattr(self, "trello_status_lbl"):
+
+            return
+
+        k = self.trello_api_key_var.get().strip() if hasattr(self, "trello_api_key_var") else ""
+
+        t = self.trello_token_var.get().strip() if hasattr(self, "trello_token_var") else ""
+
+        lid = self.trello_list_id_var.get().strip() if hasattr(self, "trello_list_id_var") else ""
+
+        configured = bool(k and t and lid)
+
+        try:
+
+            if configured:
+
+                if hasattr(self, "trello_status_banner"):
+
+                    self.trello_status_banner.configure(fg_color="#f0fdf4", border_color="#86efac")
+
+                self.trello_status_lbl.configure(
+
+                    text="✅ Collegamento Fisso Attivo — Bacheca: Banco Alimentare V4 - Consigli",
+
+                    text_color="#166534",
+
+                )
+
+                if hasattr(self, "trello_info_lbl"):
+
+                    self.trello_info_lbl.configure(
+
+                        text="Configurazione gestita centralmente: nessun dato da inserire. "
+
+                             "Ogni consiglio inviato raggiunge automaticamente la bacheca e la checklist locale V4/SUGGERIMENTI/."
+
+                    )
+
+            else:
+
+                if hasattr(self, "trello_status_banner"):
+
+                    self.trello_status_banner.configure(fg_color="#fffbeb", border_color="#fde68a")
+
+                self.trello_status_lbl.configure(
+
+                    text="🔒 Trello in attesa di sblocco — Usa '🔐 Sblocco Rapido Profilo' nella tab Chiavi API.",
+
+                    text_color="#92400e",
+
+                )
+
+                if hasattr(self, "trello_info_lbl"):
+
+                    self.trello_info_lbl.configure(
+
+                        text="I consigli vengono sempre salvati in locale in V4/SUGGERIMENTI/. "
+
+                             "Per attivare anche Trello senza inserire chiavi manualmente, sblocca il profilo con la password."
+
+                    )
+
+        except Exception:
+
+            pass
+
+        if getattr(self, "feedback_panel", None) is not None:
+
+            self.feedback_panel.refresh_trello_state(self._current_trello_merged_config())
+
+    def _toggle_trello_token_vis(self):
+
+        self._trello_token_shown = not getattr(self, "_trello_token_shown", False)
+
+        try:
+
+            self.trello_token_entry.configure(show="" if self._trello_token_shown else "•")
+
+        except Exception:
+
+            pass
 
     def _on_arbitrator_change(self, *args):
 
         self._on_provider_change()
-
-
 
     def _on_provider_change(self, *args):
 
@@ -2961,7 +3515,39 @@ class SettingsDialog(ctk.CTkToplevel):
 
         arb_key = ARBITRATOR_INV_MAP.get(arb_disp.get(), DEFAULT_CASCADE_ARBITRATOR_MODEL) if arb_disp else None
 
-        arb_enabled = self.enable_arbitrator_var.get() if hasattr(self, "enable_arbitrator_var") else None
+        arb_free = bool(self.enable_arbitrator_on_free_var.get()) if hasattr(self, "enable_arbitrator_on_free_var") else (
+
+            bool(self.enable_arbitrator_var.get()) if hasattr(self, "enable_arbitrator_var") else None
+
+        )
+
+        arb_paid = bool(self.enable_arbitrator_on_paid_var.get()) if hasattr(self, "enable_arbitrator_on_paid_var") else None
+
+        arb_enabled = bool(arb_free or arb_paid) if (arb_free is not None or arb_paid is not None) else None
+
+        free_key = (
+
+            CASCADE_FREE_INV_MAP.get(self.cascade_free_var.get(), DEFAULT_CASCADE_FREE_PRIMARY_MODE)
+
+            if hasattr(self, "cascade_free_var") else None
+
+        )
+
+        paid_key = (
+
+            CASCADE_PAID_INV_MAP.get(self.cascade_paid_var.get(), DEFAULT_CASCADE_PAID_MODE)
+
+            if hasattr(self, "cascade_paid_var") else None
+
+        )
+
+        fb_key = (
+
+            CASCADE_FALLBACK_INV_MAP.get(self.cascade_fallback_var.get(), DEFAULT_CASCADE_FALLBACK_MODE)
+
+            if hasattr(self, "cascade_fallback_var") else None
+
+        )
 
         if hasattr(self, "cascade_map"):
 
@@ -2971,7 +3557,17 @@ class SettingsDialog(ctk.CTkToplevel):
 
                 arbitrator_model=arb_key,
 
-                enable_arbitrator=arb_enabled
+                enable_arbitrator=arb_enabled,
+
+                free_mode=free_key,
+
+                paid_mode=paid_key,
+
+                fallback_mode=fb_key,
+
+                enable_arbitrator_on_free=arb_free,
+
+                enable_arbitrator_on_paid=arb_paid,
 
             )
 
@@ -3085,11 +3681,19 @@ class SettingsDialog(ctk.CTkToplevel):
 
 
 
-        self.opt_var = tk.BooleanVar(value=bool(self._cfg.get("scanner_auto_optimize", True)))
+        self.opt_var = tk.BooleanVar(value=False)
 
-        ctk.CTkSwitch(switches_f, text="Auto-ottimizzazione scansione (raddrizzamento e nitidezza matita)", variable=self.opt_var, font=("Segoe UI", 10)).pack(anchor="w", pady=2)
+        ctk.CTkLabel(
 
+            switches_f,
 
+            text="✓ Raddrizzamento e orientamento foglio (90°/180°/deskew) sempre attivi, senza alterazioni nascoste di contrasto.",
+
+            font=("Segoe UI", 9, "italic"),
+
+            text_color="#475569",
+
+        ).pack(anchor="w", pady=(0, 3))
 
         self.auto_preset_var = tk.BooleanVar(value=bool(self._cfg.get("auto_preset_assignment", False)))
 
@@ -3212,7 +3816,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
 
 
-        # Slider 2: Contrasto (0.5x a 2.5x, default 1.0x)
+        # Slider 2: Contrasto (0.5x a 3.0x, default 1.0x)
 
         s2_row = ctk.CTkFrame(sliders_box, fg_color="transparent")
 
@@ -3222,7 +3826,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
         self.contrast_slider = ctk.CTkSlider(
 
-            s2_row, from_=0.5, to=2.5, number_of_steps=100, variable=self.contrast_var,
+            s2_row, from_=0.5, to=3.0, number_of_steps=125, variable=self.contrast_var,
 
             command=lambda v: self._on_tuning_slider_change()
 
@@ -3396,6 +4000,18 @@ class SettingsDialog(ctk.CTkToplevel):
                 pass
 
             self._tuning_preview_job = None
+
+        if getattr(self, "_resize_job", None):
+
+            try:
+
+                self.after_cancel(self._resize_job)
+
+            except Exception:
+
+                pass
+
+            self._resize_job = None
 
         for job_id in list(getattr(self, "_scheduled_jobs", [])):
 
@@ -3754,7 +4370,12 @@ class SettingsDialog(ctk.CTkToplevel):
             return
         from .components import FullScreenViewerDialogV3
         img_name = getattr(self, "_last_test_image_path", "Scansione_Originale.jpg")
-        viewer = FullScreenViewerDialogV3(self, image_path=str(img_name), initial_image=self._test_pil_orig)
+        viewer = FullScreenViewerDialogV3(
+            self,
+            image_path=str(img_name),
+            initial_image=self._test_pil_orig,
+            persist_rotation=False,
+        )
         self.wait_window(viewer)
         self._safe_restore_modal()
 
@@ -3766,9 +4387,21 @@ class SettingsDialog(ctk.CTkToplevel):
         b = float(self.brightness_var.get())
         c = float(self.contrast_var.get())
         s = float(self.sharpness_var.get())
-        tuned_highres = ScannerService.apply_image_tuning(self._test_pil_orig, brightness=b, contrast=c, sharpness=s)
+        sig = (id(self._test_pil_orig), round(b, 3), round(c, 3), round(s, 3))
+        cached_img = getattr(self, "_tuned_cache_img", None)
+        if getattr(self, "_tuned_cache_sig", None) == sig and isinstance(cached_img, Image.Image):
+            tuned_highres = cached_img
+        else:
+            tuned_highres = ScannerService.apply_image_tuning(self._test_pil_orig, brightness=b, contrast=c, sharpness=s)
+            self._tuned_cache_sig = sig
+            self._tuned_cache_img = tuned_highres
         img_name = "Elaborata_con_Slider.jpg"
-        viewer = FullScreenViewerDialogV3(self, image_path=img_name, initial_image=tuned_highres)
+        viewer = FullScreenViewerDialogV3(
+            self,
+            image_path=img_name,
+            initial_image=tuned_highres,
+            persist_rotation=False,
+        )
         self.wait_window(viewer)
         self._safe_restore_modal()
 
@@ -3803,6 +4436,10 @@ class SettingsDialog(ctk.CTkToplevel):
                 self._last_test_image_path = "Immagine_Test_Scansionata.jpg"
 
             self._test_pil_orig = rgb
+
+            self._tuned_cache_sig = None
+
+            self._tuned_cache_img = None
 
             target_w, target_h = self._get_preview_target_size()
             thumb = rgb.copy()
@@ -3910,18 +4547,38 @@ class SettingsDialog(ctk.CTkToplevel):
         try:
 
             preview_base = self._test_pil_orig.copy()
+
             preview_base.thumbnail((target_w, target_h), Image.Resampling.BILINEAR)
+
             w, h = preview_base.size
 
             self._ctk_thumb_orig = ctk.CTkImage(light_image=preview_base, dark_image=preview_base, size=(w, h))
 
             self.preview_orig_lbl.configure(image=self._ctk_thumb_orig, text="")
 
+            # Applica la taratura ad ALTA RISOLUZIONE (identica al salvataggio reale) PRIMA della riduzione a miniatura
 
+            sig = (id(self._test_pil_orig), round(b, 3), round(c, 3), round(s, 3))
 
-            tuned = ScannerService.apply_image_tuning(preview_base, brightness=b, contrast=c, sharpness=s)
+            cached_img = getattr(self, "_tuned_cache_img", None)
 
-            self._ctk_thumb_tuned = ctk.CTkImage(light_image=tuned, dark_image=tuned, size=(w, h))
+            if getattr(self, "_tuned_cache_sig", None) == sig and isinstance(cached_img, Image.Image):
+
+                tuned_highres = cached_img
+
+            else:
+
+                tuned_highres = ScannerService.apply_image_tuning(self._test_pil_orig, brightness=b, contrast=c, sharpness=s)
+
+                self._tuned_cache_sig = sig
+
+                self._tuned_cache_img = tuned_highres
+
+            tuned_thumb = tuned_highres.copy()
+
+            tuned_thumb.thumbnail((target_w, target_h), Image.Resampling.BILINEAR)
+
+            self._ctk_thumb_tuned = ctk.CTkImage(light_image=tuned_thumb, dark_image=tuned_thumb, size=tuned_thumb.size)
 
             self.preview_tuned_lbl.configure(image=self._ctk_thumb_tuned, text="")
 
@@ -4195,7 +4852,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
             and getattr(self, "_keys_unlocked_by_pwd", False)
 
-            and len(self._key_rows) > 0
+            and (len(self._key_rows) > 0 or getattr(self, "_trello_unlocked_by_pwd", False))
 
         ):
 
@@ -4251,13 +4908,53 @@ class SettingsDialog(ctk.CTkToplevel):
 
         self._refresh_keys_ui()
 
+        trello_unlocked = False
+
+        for field, attr in (
+
+            ("trello_api_key", "trello_api_key_var"),
+
+            ("trello_token", "trello_token_var"),
+
+            ("trello_list_id", "trello_list_id_var"),
+
+        ):
+
+            val = str(keys.get(field) or "").strip()
+
+            if val and hasattr(self, attr):
+
+                getattr(self, attr).set(val)
+
+                trello_unlocked = True
+
+        self._trello_unlocked_by_pwd = trello_unlocked
+
+        if hasattr(self, "_refresh_trello_status_banner"):
+
+            self._refresh_trello_status_banner()
+
+        if getattr(self, "feedback_panel", None) is not None:
+
+            self.feedback_panel.refresh_trello_state(self._current_trello_merged_config())
+
         self.pwd_var.set("")
 
         if hasattr(self, "unlock_status_lbl"):
 
+            base_msg = (
+
+                "✓ Chiavi IA e collegamento Trello sbloccati!"
+
+                if trello_unlocked
+
+                else "✓ Chiavi del profilo sbloccate!"
+
+            )
+
             self.unlock_status_lbl.configure(
 
-                text="✓ Chiavi di Giovanni sbloccate! Clicca '💾 Salva Modifiche' (o premi Invio) per confermare.",
+                text=f"{base_msg} Clicca '💾 Salva Modifiche' (o premi Invio) per confermare.",
 
                 text_color="#16a34a",
 
@@ -4411,9 +5108,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
         if hasattr(self, "cascade_map"):
 
-            raw_prov = self.PROVIDER_INV_MAP.get(self.provider_select_var.get(), "cascade")
-
-            self.cascade_map.update_mode(raw_prov, k1, k2, or_k)
+            self._on_provider_change()
 
 
 
@@ -4525,7 +5220,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
             "Ripristina Default",
 
-            "Ripristinare modello e opzioni ai valori predefiniti?\n(Le chiavi API NON verranno toccate.)",
+            "Ripristinare modello e opzioni ai valori predefiniti?\n(Le chiavi API e Trello NON verranno toccate.)",
 
             parent=self,
 
@@ -4534,6 +5229,18 @@ class SettingsDialog(ctk.CTkToplevel):
             return
 
         self.provider_select_var.set(self.PROVIDER_DISPLAY_MAP["cascade"])
+
+        if hasattr(self, "cascade_free_var"):
+
+            self.cascade_free_var.set(CASCADE_FREE_MODES[DEFAULT_CASCADE_FREE_PRIMARY_MODE])
+
+        if hasattr(self, "cascade_paid_var"):
+
+            self.cascade_paid_var.set(CASCADE_PAID_MODES[DEFAULT_CASCADE_PAID_MODE])
+
+        if hasattr(self, "cascade_fallback_var"):
+
+            self.cascade_fallback_var.set(CASCADE_FALLBACK_MODES[DEFAULT_CASCADE_FALLBACK_MODE])
 
         self.or_model_var.set(DEFAULT_OPENROUTER_MODEL)
 
@@ -4557,9 +5264,17 @@ class SettingsDialog(ctk.CTkToplevel):
 
             self.arbitrator_model_var.set(ARBITRATOR_DISPLAY_MAP[DEFAULT_CASCADE_ARBITRATOR_MODEL])
 
-        if hasattr(self, "enable_arbitrator_var"):
+        if hasattr(self, "enable_arbitrator_on_free_var"):
+
+            self.enable_arbitrator_on_free_var.set(True)
+
+        elif hasattr(self, "enable_arbitrator_var"):
 
             self.enable_arbitrator_var.set(True)
+
+        if hasattr(self, "enable_arbitrator_on_paid_var"):
+
+            self.enable_arbitrator_on_paid_var.set(False)
 
         self._reset_shortcuts()
 
@@ -4659,11 +5374,71 @@ class SettingsDialog(ctk.CTkToplevel):
 
         raw_prov = self.PROVIDER_INV_MAP.get(self.provider_select_var.get(), "cascade")
 
+        free_mode = (
+
+            CASCADE_FREE_INV_MAP.get(self.cascade_free_var.get(), DEFAULT_CASCADE_FREE_PRIMARY_MODE)
+
+            if hasattr(self, "cascade_free_var") else DEFAULT_CASCADE_FREE_PRIMARY_MODE
+
+        )
+
+        paid_mode = (
+
+            CASCADE_PAID_INV_MAP.get(self.cascade_paid_var.get(), DEFAULT_CASCADE_PAID_MODE)
+
+            if hasattr(self, "cascade_paid_var") else DEFAULT_CASCADE_PAID_MODE
+
+        )
+
+        fallback_mode = (
+
+            CASCADE_FALLBACK_INV_MAP.get(self.cascade_fallback_var.get(), DEFAULT_CASCADE_FALLBACK_MODE)
+
+            if hasattr(self, "cascade_fallback_var") else DEFAULT_CASCADE_FALLBACK_MODE
+
+        )
+
+        on_free = (
+
+            bool(self.enable_arbitrator_on_free_var.get())
+
+            if hasattr(self, "enable_arbitrator_on_free_var")
+
+            else (bool(self.enable_arbitrator_var.get()) if hasattr(self, "enable_arbitrator_var") else True)
+
+        )
+
+        on_paid = (
+
+            bool(self.enable_arbitrator_on_paid_var.get())
+
+            if hasattr(self, "enable_arbitrator_on_paid_var") else False
+
+        )
+
+        arb_model = (
+
+            ARBITRATOR_INV_MAP.get(self.arbitrator_model_var.get(), DEFAULT_CASCADE_ARBITRATOR_MODEL)
+
+            if hasattr(self, "arbitrator_model_var") else DEFAULT_CASCADE_ARBITRATOR_MODEL
+
+        )
+
 
 
         values = {
 
             "active_provider": raw_prov,
+
+            "cascade_free_primary_mode": free_mode,
+
+            "cascade_paid_mode": paid_mode,
+
+            "cascade_fallback_mode": fallback_mode,
+
+            "cascade_buffer_model": DEFAULT_CASCADE_LUNA_MODEL if paid_mode == "luna" else DEFAULT_CASCADE_BUFFER_MODEL,
+
+            "openrouter_buffer_model": DEFAULT_CASCADE_LUNA_MODEL if paid_mode == "luna" else DEFAULT_CASCADE_BUFFER_MODEL,
 
             "openrouter_api_key": or_keys[0] if len(or_keys) > 0 else "",
 
@@ -4685,7 +5460,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
             "scanner_dpi": dpi,
 
-            "scanner_auto_optimize": bool(self.opt_var.get()),
+            "scanner_auto_optimize": False,
 
             "auto_preset_assignment": bool(self.auto_preset_var.get()),
 
@@ -4695,11 +5470,21 @@ class SettingsDialog(ctk.CTkToplevel):
 
             "image_sharpness": round(float(self.sharpness_var.get()), 2),
 
-            "cascade_arbitrator_model": ARBITRATOR_INV_MAP.get(self.arbitrator_model_var.get(), DEFAULT_CASCADE_ARBITRATOR_MODEL) if hasattr(self, "arbitrator_model_var") else DEFAULT_CASCADE_ARBITRATOR_MODEL,
+            "cascade_arbitrator_model": arb_model,
 
-            "openrouter_arbitrator_model": ARBITRATOR_INV_MAP.get(self.arbitrator_model_var.get(), DEFAULT_CASCADE_ARBITRATOR_MODEL) if hasattr(self, "arbitrator_model_var") else DEFAULT_CASCADE_ARBITRATOR_MODEL,
+            "openrouter_arbitrator_model": arb_model,
 
-            "enable_auto_arbitrator": bool(self.enable_arbitrator_var.get()) if hasattr(self, "enable_arbitrator_var") else True,
+            "enable_arbitrator_on_free": on_free,
+
+            "enable_arbitrator_on_paid": on_paid,
+
+            "enable_auto_arbitrator": bool(on_free or on_paid),
+
+            "trello_api_key": self.trello_api_key_var.get().strip() if hasattr(self, "trello_api_key_var") else "",
+
+            "trello_token": self.trello_token_var.get().strip() if hasattr(self, "trello_token_var") else "",
+
+            "trello_list_id": self.trello_list_id_var.get().strip() if hasattr(self, "trello_list_id_var") else "",
 
             "shortcuts": shortcuts,
 
@@ -5510,4 +6295,680 @@ class DuplicateRowDialogV3(ctk.CTkToplevel):
 
 
 DuplicateRowDialog = DuplicateRowDialogV3
+
+
+class _FeedbackPanel(ctk.CTkFrame):
+
+    """Pannello riutilizzabile (senza login) per inviare suggerimenti, bug o idee come Task."""
+
+    def __init__(
+        self,
+        parent,
+        config: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        on_open_settings: Optional[Callable[[], None]] = None,
+        feedback_service: Optional[FeedbackService] = None,
+        config_provider: Optional[Callable[[], Dict[str, Any]]] = None,
+        modal_parent: Optional[Any] = None,
+        compact: bool = False,
+        **frame_kwargs,
+    ):
+        frame_kwargs.setdefault("fg_color", "#f1f5f9")
+        frame_kwargs.setdefault("corner_radius", 0)
+        frame_kwargs.setdefault("border_width", 0)
+        super().__init__(parent, **frame_kwargs)
+
+        self._cfg: Dict[str, Any] = dict(config) if isinstance(config, dict) else {}
+        self._ctx: Dict[str, Any] = dict(context) if isinstance(context, dict) else {}
+        self._on_open_settings = on_open_settings
+        self._svc = feedback_service or get_feedback_service()
+        self._config_provider = config_provider
+        self._modal_parent = modal_parent
+        self._compact = bool(compact)
+        self._task_msg_labels: List[ctk.CTkLabel] = []
+        self._last_hdr_wrap: int = 0
+        self._last_form_wrap: int = 0
+        self._last_list_wrap: int = 0
+
+        self._build_ui()
+        self.refresh_trello_state()
+        self._reload_tasks()
+
+    def _current_config(self) -> Dict[str, Any]:
+        if callable(self._config_provider):
+            try:
+                provided = self._config_provider()
+                if isinstance(provided, dict):
+                    return provided
+            except Exception:
+                pass
+        return self._cfg
+
+    def _dialog_parent(self):
+        if self._modal_parent is not None:
+            try:
+                if self._modal_parent.winfo_exists():
+                    return self._modal_parent
+            except Exception:
+                pass
+        try:
+            return self.winfo_toplevel()
+        except Exception:
+            return self
+
+    def _unscaled_width(self, px_width: int) -> int:
+        try:
+            return int(self._reverse_widget_scaling(px_width))
+        except Exception:
+            return int(px_width)
+
+    def _update_hdr_wrap(self, event=None):
+        try:
+            w = event.width if event is not None else self._hdr_card.winfo_width()
+            if w <= 80:
+                return
+            wrap = max(260, self._unscaled_width(w) - 36)
+            if abs(wrap - self._last_hdr_wrap) >= 6 and self.sub_lbl.winfo_exists():
+                self._last_hdr_wrap = wrap
+                self.sub_lbl.configure(wraplength=wrap)
+        except Exception:
+            pass
+
+    def _update_form_wrap(self, event=None):
+        try:
+            w = event.width if event is not None else self._form_card.winfo_width()
+            if w <= 80:
+                return
+            wrap = max(260, self._unscaled_width(w) - 36)
+            if abs(wrap - self._last_form_wrap) >= 6 and self.status_lbl.winfo_exists():
+                self._last_form_wrap = wrap
+                self.status_lbl.configure(wraplength=wrap)
+        except Exception:
+            pass
+
+    def _current_list_wrap(self) -> int:
+        try:
+            cw = self.tasks_scroll._parent_canvas.winfo_width()
+            if cw > 80:
+                return max(240, self._unscaled_width(cw) - 38)
+        except Exception:
+            pass
+        return 660 if self._compact else 560
+
+    def _update_list_wrap(self, event=None):
+        try:
+            w = event.width if event is not None else self.tasks_scroll._parent_canvas.winfo_width()
+            if w <= 80:
+                return
+            wrap = max(240, self._unscaled_width(w) - 38)
+            if abs(wrap - self._last_list_wrap) < 8:
+                return
+            self._last_list_wrap = wrap
+            alive: List[ctk.CTkLabel] = []
+            for lbl in self._task_msg_labels:
+                try:
+                    if lbl.winfo_exists():
+                        lbl.configure(wraplength=wrap)
+                        alive.append(lbl)
+                except Exception:
+                    pass
+            self._task_msg_labels = alive
+        except Exception:
+            pass
+
+    def refresh_trello_state(self, config: Optional[Dict[str, Any]] = None) -> bool:
+        if isinstance(config, dict):
+            if self._config_provider is None:
+                self._cfg = dict(config)
+            cfg = config
+        else:
+            cfg = self._current_config()
+
+        trello_on = self._svc.has_trello_configured(cfg)
+        try:
+            if hasattr(self, "trello_badge") and self.trello_badge.winfo_exists():
+                self.trello_badge.configure(
+                    text="📌 Trello Collegato" if trello_on else "📝 Solo Documento Locale",
+                    fg_color="#dcfce7" if trello_on else "#e0f2fe",
+                    text_color="#166534" if trello_on else "#0369a1",
+                )
+        except Exception:
+            pass
+        return trello_on
+
+    def _build_ui(self):
+        pad_x = 10 if self._compact else 14
+        hdr_pady = (6, 5) if self._compact else (10, 6)
+        form_pady = (0, 5) if self._compact else (0, 6)
+        list_pady = (0, 6) if self._compact else (0, 10)
+        msg_height = 95 if self._compact else 110
+        scroll_height = 185 if self._compact else 195
+        wrap_w = 720 if self._compact else 620
+
+        # 1. Banner Intestazione
+        hdr = ctk.CTkFrame(self, corner_radius=12, fg_color="#ffffff", border_width=1, border_color=BORDER)
+        hdr.pack(fill=tk.X, padx=pad_x, pady=hdr_pady)
+        self._hdr_card = hdr
+
+        hdr_top = ctk.CTkFrame(hdr, fg_color="transparent")
+        hdr_top.pack(fill=tk.X, padx=14, pady=(6 if self._compact else 8, 2 if self._compact else 4))
+
+        ctk.CTkLabel(
+            hdr_top,
+            text="💡 Invia un Consiglio o Segnalazione (Zero Login)",
+            font=("Segoe UI", 15, "bold"),
+            text_color=TEXT,
+        ).pack(side=tk.LEFT)
+
+        trello_on = self._svc.has_trello_configured(self._current_config())
+        self.trello_badge = ctk.CTkLabel(
+            hdr_top,
+            text="📌 Trello Collegato" if trello_on else "📝 Solo Documento Locale",
+            font=("Segoe UI", 10, "bold"),
+            corner_radius=8,
+            fg_color="#dcfce7" if trello_on else "#e0f2fe",
+            text_color="#166534" if trello_on else "#0369a1",
+            padx=10,
+            pady=4,
+        )
+        self.trello_badge.pack(side=tk.RIGHT)
+
+        sub_row = ctk.CTkFrame(hdr, fg_color="transparent")
+        sub_row.pack(fill=tk.X, padx=14, pady=(0, 6 if self._compact else 8))
+
+        self.sub_lbl = ctk.CTkLabel(
+            sub_row,
+            text="Scrivi una nota veloce: viene salvata subito come task '- [ ]' nel documento V4/SUGGERIMENTI/ e, se collegato, su Trello.",
+            font=("Segoe UI", 10),
+            text_color=MUTED,
+            justify="left",
+            wraplength=wrap_w,
+        )
+        self.sub_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        hdr.bind("<Configure>", self._update_hdr_wrap)
+
+        # 2. Card Nuovo Consiglio / Task
+        form_card = ctk.CTkFrame(self, corner_radius=12, fg_color="#ffffff", border_width=1, border_color=BORDER)
+        form_card.pack(fill=tk.X, padx=pad_x, pady=form_pady)
+        self._form_card = form_card
+
+        meta_row = ctk.CTkFrame(form_card, fg_color="transparent")
+        meta_row.pack(fill=tk.X, padx=14, pady=(6 if self._compact else 8, 3 if self._compact else 5))
+        meta_row.columnconfigure(1, weight=1)
+        meta_row.columnconfigure(3, weight=1)
+
+        ctk.CTkLabel(meta_row, text="Tipo:", font=("Segoe UI", 10, "bold"), text_color=TEXT).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.category_var = tk.StringVar(value=FEEDBACK_CATEGORIES[0])
+        self.category_menu = ctk.CTkOptionMenu(
+            meta_row,
+            variable=self.category_var,
+            values=list(FEEDBACK_CATEGORIES),
+            width=210,
+            height=30,
+            corner_radius=8,
+            fg_color=PRIMARY,
+            button_color=PRIMARY_HOVER,
+            font=("Segoe UI", 10, "bold"),
+        )
+        self.category_menu.grid(row=0, column=1, sticky="w", padx=(0, 12))
+
+        ctk.CTkLabel(meta_row, text="Nome (opzionale):", font=("Segoe UI", 10, "bold"), text_color=TEXT).grid(row=0, column=2, sticky="w", padx=(0, 6))
+        self.author_var = tk.StringVar(value="")
+        self.author_entry = ctk.CTkEntry(
+            meta_row,
+            textvariable=self.author_var,
+            height=30,
+            corner_radius=8,
+            placeholder_text="Es. Marco · Postazione 1",
+        )
+        self.author_entry.grid(row=0, column=3, sticky="ew")
+
+        ctk.CTkLabel(
+            form_card,
+            text="Il tuo suggerimento / segnalazione:",
+            font=("Segoe UI", 10, "bold"),
+            text_color=TEXT,
+        ).pack(anchor="w", padx=14, pady=(1, 2))
+
+        self.message_box = ctk.CTkTextbox(
+            form_card,
+            height=msg_height,
+            corner_radius=8,
+            fg_color="#f8fafc",
+            border_width=1,
+            border_color="#cbd5e1",
+            font=("Segoe UI", 11),
+            wrap="word",
+        )
+        self.message_box.pack(fill=tk.X, padx=14, pady=(0, 4 if self._compact else 6))
+
+        send_row = ctk.CTkFrame(form_card, fg_color="transparent")
+        send_row.pack(fill=tk.X, padx=14, pady=(0, 2 if self._compact else 5))
+
+        self.attach_ctx_var = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            send_row,
+            text="Allega contesto sessione (modello IA, supermercato — MAI chiavi o immagini)",
+            variable=self.attach_ctx_var,
+            font=("Segoe UI", 9),
+            text_color=MUTED,
+        ).pack(side=tk.LEFT)
+
+        self.send_btn = ctk.CTkButton(
+            send_row,
+            text="📨 Invia Consiglio",
+            width=165,
+            height=34 if self._compact else 36,
+            corner_radius=10,
+            fg_color="#16a34a",
+            hover_color="#15803d",
+            font=("Segoe UI", 12, "bold"),
+            command=self._submit,
+        )
+        self.send_btn.pack(side=tk.RIGHT)
+
+        self.status_lbl = ctk.CTkLabel(
+            form_card,
+            text="",
+            font=("Segoe UI", 10, "bold"),
+            text_color="#166534",
+            anchor="w",
+            justify="left",
+            wraplength=wrap_w,
+            height=20 if self._compact else 24,
+        )
+        self.status_lbl.pack(fill=tk.X, padx=14, pady=(0, 4 if self._compact else 5))
+        form_card.bind("<Configure>", self._update_form_wrap)
+
+        # 3. Card Elenco Task Salvate & Azioni (titolo + barra pulsanti dedicata per evitare tagli)
+        list_card = ctk.CTkFrame(self, corner_radius=12, fg_color="#ffffff", border_width=1, border_color=BORDER)
+        list_card.pack(fill=tk.BOTH, expand=True, padx=pad_x, pady=list_pady)
+
+        list_hdr = ctk.CTkFrame(list_card, fg_color="transparent")
+        list_hdr.pack(fill=tk.X, padx=12, pady=(6 if self._compact else 8, 2))
+
+        ctk.CTkLabel(
+            list_hdr,
+            text="📋 Ultime Task & Suggerimenti Annotati",
+            font=("Segoe UI", 11 if self._compact else 12, "bold"),
+            text_color=TEXT,
+            anchor="w",
+        ).pack(side=tk.LEFT)
+
+        list_actions = ctk.CTkFrame(list_card, fg_color="transparent")
+        list_actions.pack(fill=tk.X, padx=12, pady=(0, 5 if self._compact else 6))
+
+        self.sync_trello_btn = ctk.CTkButton(
+            list_actions,
+            text="🔄 Invia Pendenti Trello",
+            width=155,
+            height=28,
+            corner_radius=7,
+            fg_color="#fef3c7",
+            hover_color="#fde68a",
+            text_color="#92400e",
+            font=("Segoe UI", 9, "bold"),
+            command=self._sync_pending,
+        )
+        self.sync_trello_btn.pack(side=tk.LEFT)
+
+        ctk.CTkButton(
+            list_actions,
+            text="🐙 Issue GitHub",
+            width=110,
+            height=28,
+            corner_radius=7,
+            fg_color="#f1f5f9",
+            hover_color="#e2e8f0",
+            text_color=TEXT,
+            font=("Segoe UI", 9, "bold"),
+            command=self._open_github,
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        ctk.CTkButton(
+            list_actions,
+            text="📂 Cartella",
+            width=86,
+            height=28,
+            corner_radius=7,
+            fg_color="#f1f5f9",
+            hover_color="#e2e8f0",
+            text_color=TEXT,
+            font=("Segoe UI", 9, "bold"),
+            command=self._open_folder,
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        ctk.CTkButton(
+            list_actions,
+            text="📄 Apri Task (.md)",
+            width=122,
+            height=28,
+            corner_radius=7,
+            fg_color="#e0f2fe",
+            hover_color="#bae6fd",
+            text_color=PRIMARY_HOVER,
+            font=("Segoe UI", 9, "bold"),
+            command=self._open_markdown,
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        self.tasks_scroll = ctk.CTkScrollableFrame(
+            list_card,
+            corner_radius=8,
+            fg_color="#f8fafc",
+            border_width=1,
+            border_color="#e2e8f0",
+            height=scroll_height,
+        )
+        self.tasks_scroll.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6 if self._compact else 10))
+        try:
+            self.tasks_scroll._parent_canvas.bind("<Configure>", self._update_list_wrap, add="+")
+        except Exception:
+            pass
+
+    def _open_trello_settings(self):
+        if self._on_open_settings:
+            self._on_open_settings()
+
+    def _open_markdown(self):
+        if not self._svc.open_markdown():
+            self.status_lbl.configure(
+                text="⚠️ Impossibile aprire il file locale delle task (.md).",
+                text_color="#b45309",
+            )
+
+    def _open_folder(self):
+        if not self._svc.open_folder():
+            self.status_lbl.configure(
+                text="⚠️ Impossibile aprire la cartella SUGGERIMENTI.",
+                text_color="#b45309",
+            )
+
+    def _submit(self):
+        msg = self.message_box.get("1.0", tk.END).strip()
+        if not msg:
+            messagebox.showwarning(
+                "Testo Mancante",
+                "Scrivi almeno una riga di suggerimento o segnalazione prima di inviare.",
+                parent=self._dialog_parent(),
+            )
+            return
+
+        cat = self.category_var.get()
+        author = self.author_var.get().strip()
+        ctx = dict(self._ctx) if self.attach_ctx_var.get() else {}
+        cfg = dict(self._current_config())
+
+        self.send_btn.configure(state="disabled", text="Salvataggio...")
+        self.status_lbl.configure(text="💾 Salvataggio consiglio in corso...", text_color=PRIMARY_HOVER)
+
+        def work(_progress):
+            return self._svc.submit_feedback(
+                author=author,
+                category=cat,
+                message=msg,
+                context=ctx,
+                config=cfg,
+            )
+
+        def done(res, error):
+            try:
+                if not self.winfo_exists():
+                    return
+                self.send_btn.configure(state="normal", text="📨 Invia Consiglio")
+            except Exception:
+                return
+
+            if error or not res or not res.get("success"):
+                err_txt = str(error or (res or {}).get("error") or "Errore sconosciuto")
+                self.status_lbl.configure(text=f"⚠️ {err_txt}", text_color="#b91c1c")
+                return
+
+            self.message_box.delete("1.0", tk.END)
+            md_name = Path(res["markdown_path"]).name
+            if res.get("trello_synced"):
+                self.status_lbl.configure(
+                    text=f"✅ Task salvata in {md_name} e creata Card su Trello!",
+                    text_color="#166534",
+                )
+            elif res.get("trello_attempted"):
+                self.status_lbl.configure(
+                    text=f"✅ Salvata in locale ({md_name}). Trello offline/errore ({res.get('trello_error', '')}): puoi riprovare con '🔄 Invia Pendenti Trello'.",
+                    text_color="#b45309",
+                )
+            else:
+                self.status_lbl.configure(
+                    text=f"✅ Task salvata nel documento locale {md_name}!",
+                    text_color="#166534",
+                )
+            self._reload_tasks()
+
+        BackgroundTask(self, work, done).start()
+
+    def _sync_pending(self):
+        cfg = dict(self._current_config())
+        if not self._svc.has_trello_configured(cfg):
+            messagebox.showinfo(
+                "Trello Non Attivo",
+                "Trello non ancora attivo su questa postazione. "
+                "L'amministratore può sbloccarlo con '🔐 Sblocco Rapido Profilo' al primo avvio o nelle Impostazioni.",
+                parent=self._dialog_parent(),
+            )
+            return
+
+        self.sync_trello_btn.configure(state="disabled", text="Invio in corso...")
+
+        def work(_progress):
+            return self._svc.sync_pending_to_trello(config=cfg)
+
+        def done(res, error):
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+            if error or not res:
+                self.status_lbl.configure(text=f"⚠️ Errore sincronizzazione Trello: {error}", text_color="#b91c1c")
+            else:
+                synced = res.get("synced", 0)
+                failed = res.get("failed", 0)
+                if res.get("attempted", 0) == 0:
+                    self.status_lbl.configure(text="✅ Tutte le task risultano già inviate su Trello.", text_color="#166534")
+                elif failed == 0:
+                    self.status_lbl.configure(text=f"✅ Sincronizzate {synced} task su Trello!", text_color="#166534")
+                else:
+                    self.status_lbl.configure(
+                        text=f"⚠️ Inviate {synced} task su Trello, {failed} non riuscite.",
+                        text_color="#b45309",
+                    )
+            self._reload_tasks()
+
+        BackgroundTask(self, work, done).start()
+
+    def _open_github(self):
+        typed = self.message_box.get("1.0", tk.END).strip()
+        cat = self.category_var.get()
+        first_line = typed.splitlines()[0].strip() if typed else "Suggerimento dall'app Banco Alimentare V4"
+        body = typed or "Descrivi qui il suggerimento o problema riscontrato:"
+        url = self._svc.build_github_issue_url(title=first_line, body=body, category=cat)
+        webbrowser.open(url)
+
+    def _reload_tasks(self):
+        self._task_msg_labels.clear()
+        for w in self.tasks_scroll.winfo_children():
+            try:
+                w.destroy()
+            except Exception:
+                pass
+
+        items = self._svc.list_local_feedback(limit=25)
+        pending_count = self._svc.count_pending_trello()
+        try:
+            self.sync_trello_btn.configure(
+                state="normal",
+                text=f"🔄 Pendenti Trello ({pending_count})" if pending_count > 0 else "🔄 Trello Allineato",
+            )
+        except Exception:
+            pass
+
+        if not items:
+            ctk.CTkLabel(
+                self.tasks_scroll,
+                text="Nessun consiglio o task registrato finora.\nScrivi qui sopra e premi '📨 Invia Consiglio' per creare il primo elemento in lista.",
+                font=("Segoe UI", 10),
+                text_color=MUTED,
+                justify="center",
+            ).pack(pady=32, padx=16)
+            return
+
+        msg_wrap = self._current_list_wrap()
+        self._last_list_wrap = msg_wrap
+        for rec in items:
+            row = ctk.CTkFrame(
+                self.tasks_scroll,
+                corner_radius=8,
+                fg_color="#ffffff",
+                border_width=1,
+                border_color="#e2e8f0",
+            )
+            row.pack(fill=tk.X, padx=4, pady=3)
+
+            top = ctk.CTkFrame(row, fg_color="transparent")
+            top.pack(fill=tk.X, padx=10, pady=(6, 2))
+
+            cat = rec.get("category") or "Suggerimento"
+            author = rec.get("author") or "Anonimo"
+            try:
+                dt_str = rec.get("created_at", "")[:16].replace("T", " ")
+            except Exception:
+                dt_str = ""
+            ctk.CTkLabel(
+                top,
+                text=f"☐ [{cat}]",
+                font=("Segoe UI", 10, "bold"),
+                text_color=PRIMARY_HOVER,
+            ).pack(side=tk.LEFT)
+
+            trello_ok = bool(rec.get("trello_synced"))
+            ctk.CTkLabel(
+                top,
+                text="📌 Trello OK" if trello_ok else "📝 Solo Locale",
+                font=("Segoe UI", 9, "bold"),
+                text_color="#166534" if trello_ok else "#64748b",
+            ).pack(side=tk.RIGHT)
+
+            ctk.CTkLabel(
+                top,
+                text=f"{author} · {dt_str}",
+                font=("Segoe UI", 9),
+                text_color=MUTED,
+            ).pack(side=tk.RIGHT, padx=(0, 10))
+
+            msg_txt = str(rec.get("message") or "").strip()
+            msg_lbl = ctk.CTkLabel(
+                row,
+                text=msg_txt,
+                font=("Segoe UI", 10),
+                text_color=TEXT,
+                anchor="w",
+                justify="left",
+                wraplength=msg_wrap,
+            )
+            msg_lbl.pack(fill=tk.X, padx=10, pady=(0, 7))
+            self._task_msg_labels.append(msg_lbl)
+
+        try:
+            self.tasks_scroll._parent_canvas.yview_moveto(0)
+        except Exception:
+            pass
+
+
+FeedbackPanelV3 = _FeedbackPanel
+FeedbackPanel = _FeedbackPanel
+
+
+class FeedbackDialogV3(ctk.CTkToplevel):
+
+    """Finestra rapida (senza login) per inviare suggerimenti, bug o idee come Task."""
+
+    def __init__(
+        self,
+        parent,
+        config: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        on_open_settings: Optional[Callable[[], None]] = None,
+        feedback_service: Optional[FeedbackService] = None,
+    ):
+        super().__init__(parent)
+        self.title("💡 Consigli & Segnalazioni — Banco Alimentare")
+        self.resizable(True, True)
+        self.minsize(640, 580)
+        self.configure(fg_color="#f1f5f9")
+        self._cfg = dict(config) if isinstance(config, dict) else {}
+        self._ctx = context or {}
+        self._on_open_settings = on_open_settings
+        self._svc = feedback_service or get_feedback_service()
+
+        _center_modal(self, parent, 740, 690)
+        _make_modal(self, parent)
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+        self.panel = _FeedbackPanel(
+            self,
+            config=self._cfg,
+            context=self._ctx,
+            on_open_settings=self._on_open_settings,
+            feedback_service=self._svc,
+            config_provider=lambda: self._cfg,
+            modal_parent=self,
+            compact=False,
+            fg_color="transparent",
+            corner_radius=0,
+            border_width=0,
+        )
+        self.panel.pack(fill=tk.BOTH, expand=True)
+
+        # Esposizione attributi e widget per piena retrocompatibilità
+        self.trello_badge = self.panel.trello_badge
+        self.category_var = self.panel.category_var
+        self.category_menu = self.panel.category_menu
+        self.author_var = self.panel.author_var
+        self.author_entry = self.panel.author_entry
+        self.message_box = self.panel.message_box
+        self.attach_ctx_var = self.panel.attach_ctx_var
+        self.send_btn = self.panel.send_btn
+        self.status_lbl = self.panel.status_lbl
+        self.sync_trello_btn = self.panel.sync_trello_btn
+        self.tasks_scroll = self.panel.tasks_scroll
+
+    def refresh_trello_state(self, config: Optional[Dict[str, Any]] = None) -> bool:
+        if isinstance(config, dict):
+            self._cfg = dict(config)
+        return self.panel.refresh_trello_state(config=self._cfg if config is None else config)
+
+    def _open_trello_settings(self):
+        cb = self._on_open_settings
+        self.destroy()
+        if cb:
+            cb()
+
+    def _open_markdown(self):
+        self.panel._open_markdown()
+
+    def _open_folder(self):
+        self.panel._open_folder()
+
+    def _submit(self):
+        self.panel._submit()
+
+    def _sync_pending(self):
+        self.panel._sync_pending()
+
+    def _open_github(self):
+        self.panel._open_github()
+
+    def _reload_tasks(self):
+        self.panel._reload_tasks()
+
+
+FeedbackDialog = FeedbackDialogV3
 

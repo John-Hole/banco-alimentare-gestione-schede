@@ -15,6 +15,13 @@ from ..services.session_logger import get_session_logger
 
 GEMINI_RESPONSE_SCHEMA = {
     "type": "OBJECT",
+    "propertyOrdering": [
+        "supermercato",
+        "numero_scheda",
+        "colonne",
+        "note_o_anomalie",
+        "scheda_capovolta",
+    ],
     "properties": {
         "supermercato": {"type": "STRING", "nullable": True},
         "numero_scheda": {"type": "STRING", "nullable": True},
@@ -22,6 +29,13 @@ GEMINI_RESPONSE_SCHEMA = {
             "type": "ARRAY",
             "items": {
                 "type": "OBJECT",
+                "propertyOrdering": [
+                    "colonna_idx",
+                    "categoria",
+                    "scatole",
+                    "totale_dichiarato_kg",
+                    "totale_dichiarato_scatole",
+                ],
                 "properties": {
                     "colonna_idx": {"type": "INTEGER"},
                     "categoria": {"type": "STRING"},
@@ -29,6 +43,7 @@ GEMINI_RESPONSE_SCHEMA = {
                         "type": "ARRAY",
                         "items": {
                             "type": "OBJECT",
+                            "propertyOrdering": ["riga", "kg"],
                             "properties": {
                                 "riga": {"type": "STRING"},
                                 "kg": {"type": "NUMBER"}
@@ -47,6 +62,49 @@ GEMINI_RESPONSE_SCHEMA = {
     },
     "required": ["colonne", "scheda_capovolta"]
 }
+
+
+def build_gemini_generation_config(
+    model_name: str,
+    response_mime_type: Optional[str] = "application/json",
+    response_schema: Optional[Dict[str, Any]] = GEMINI_RESPONSE_SCHEMA,
+    is_arbitration: bool = False,
+    max_output_tokens: int = 16384,
+) -> Dict[str, Any]:
+    """Costruisce generationConfig ottimale per famiglia di modelli Gemini.
+
+    - Gemini 3.x / 4.x+: thinkingLevel ('LOW' per OCR veloce, 'MEDIUM' per arbitraggio),
+      omette temperature (puo' causare loop di ragionamento sui Gemini 3+), maxOutputTokens=16384.
+    - Gemini 2.5.x: thinkingBudget=1024, temperature=0.0, maxOutputTokens=16384.
+    - Gemini 1.5 / 2.0: omette thinkingConfig (non supportato), temperature=0.0, maxOutputTokens=8192.
+    """
+    clean = (model_name or "").strip().lower()
+    if clean.startswith("models/"):
+        clean = clean[7:]
+
+    is_gemini_3_plus = clean.startswith(("gemini-3", "gemini-4", "gemini-5"))
+    is_gemini_2_5 = clean.startswith("gemini-2.5")
+
+    cfg: Dict[str, Any] = {}
+    if response_mime_type:
+        cfg["response_mime_type"] = response_mime_type
+    if response_schema is not None:
+        cfg["response_schema"] = response_schema
+
+    if is_gemini_3_plus:
+        cfg["maxOutputTokens"] = max_output_tokens
+        cfg["thinkingConfig"] = {
+            "thinkingLevel": "MEDIUM" if is_arbitration else "LOW"
+        }
+    elif is_gemini_2_5:
+        cfg["temperature"] = 0.0
+        cfg["maxOutputTokens"] = max_output_tokens
+        cfg["thinkingConfig"] = {"thinkingBudget": 1024}
+    else:
+        cfg["temperature"] = 0.0
+        cfg["maxOutputTokens"] = min(max_output_tokens, 8192)
+
+    return cfg
 
 
 class GeminiVisionExtractor(BaseVisionExtractor):
@@ -90,6 +148,13 @@ class GeminiVisionExtractor(BaseVisionExtractor):
         last = parts[-1]
         return last.get("text", "") if isinstance(last, dict) else ""
 
+    @staticmethod
+    def _extract_finish_reason(candidates: list) -> str:
+        """Restituisce il finishReason del primo candidate Gemini (se presente)."""
+        if not candidates or not isinstance(candidates[0], dict):
+            return ""
+        return str(candidates[0].get("finishReason") or "").strip()
+
     def _execute_gemini_call(self, api_key: str, model_name: str, img_data: str, mime_type: str) -> Tuple[int, Dict[str, Any], str, float]:
         """Esegue una singola chiamata REST a Google Generative Language API e calcola tempo e token."""
         self.session_logger.log_ai_attempt("Google Gemini", "Google", model_name)
@@ -112,24 +177,26 @@ class GeminiVisionExtractor(BaseVisionExtractor):
                     ]
                 }
             ],
-            "generationConfig": {
-                "response_mime_type": "application/json",
-                "response_schema": GEMINI_RESPONSE_SCHEMA,
-                "temperature": 0.0,
-                "maxOutputTokens": 4096,
-                "thinkingConfig": {"thinkingBudget": 1024}
-            }
+            "generationConfig": build_gemini_generation_config(model_name)
         }
 
         t0 = time.time()
         try:
-            resp = requests.post(url, json=payload, timeout=(5, 15))
+            resp = requests.post(url, json=payload, timeout=(5, 30))
             duration = time.time() - t0
             if resp.status_code != 200:
                 self.session_logger.log_ai_result("Google Gemini", "Google", model_name, resp.status_code, duration, is_success=False, error_msg=resp.text[:300])
                 return resp.status_code, {}, resp.text, duration
             data = resp.json()
-            tokens = data.get("usageMetadata", {}).get("totalTokenCount", 0)
+            usage_meta = data.get("usageMetadata", {})
+            tokens = usage_meta.get("totalTokenCount", 0)
+            fr = self._extract_finish_reason(data.get("candidates", []))
+            if fr and fr.upper() not in self._NORMAL_FINISH_REASONS:
+                self.session_logger.logger.warning(
+                    f"[Gemini] {model_name} finishReason={fr} "
+                    f"(thoughts={usage_meta.get('thoughtsTokenCount', 0)}, "
+                    f"out={usage_meta.get('candidatesTokenCount', 0)}, tot={tokens})"
+                )
             self.session_logger.log_ai_result("Google Gemini", "Google", model_name, 200, duration, tokens=tokens, is_success=True, cost_usd=0.0)
             return 200, data, "", duration
         except requests.exceptions.Timeout:
@@ -183,11 +250,29 @@ class GeminiVisionExtractor(BaseVisionExtractor):
                     candidates = fb_json.get("candidates", [])
                     if candidates:
                         text_content = self._extract_text_from_candidates(candidates)
-                        card = self.parse_json_response(text_content)
-                        card.tempo_elaborazione_sec = round(fb_dur, 1)
-                        card.costo_usd = 0.0
-                        card.note_o_anomalie = f"[{self.backup_label} ({self.model}) | {fb_dur:.1f}s | Gratis]: Quota {self.primary_label} esaurita. {card.note_o_anomalie or ''}".strip()
-                        return card
+                        finish_reason = self._extract_finish_reason(candidates)
+                        card = self.parse_json_response(text_content, finish_reason=finish_reason)
+                        if self.is_valid_raw_extraction(card):
+                            card.tempo_elaborazione_sec = round(fb_dur, 1)
+                            card.costo_usd = 0.0
+                            if card.scheda_capovolta and not _is_retry_after_rotation:
+                                try:
+                                    from ..scanner.scanner_service import ScannerService
+                                    ScannerService.rotate_image_file_180(image_path)
+                                    retry_card = self.extract_from_image(
+                                        image_path,
+                                        _is_retry_after_rotation=True,
+                                        status_callback=status_callback,
+                                    )
+                                    retry_card.was_rotated_180 = True
+                                    return retry_card
+                                except Exception as e:
+                                    self.session_logger.logger.error(f"[Gemini Backup] Errore rotazione 180° e re-analisi: {e}")
+                            card.note_o_anomalie = f"[{self.backup_label} ({self.model}) | {fb_dur:.1f}s | Gratis]: Quota {self.primary_label} esaurita. {card.note_o_anomalie or ''}".strip()
+                            return card
+                        self.session_logger.logger.warning(
+                            f"[Gemini] Risposta o JSON incompleto da {self.backup_label}: {card.note_o_anomalie}. Avvio fallback..."
+                        )
                 else:
                     self.tracker.record_call(
                         provider=back_provider,
@@ -217,6 +302,7 @@ class GeminiVisionExtractor(BaseVisionExtractor):
             self.api_key, self.model, img_data, mime_type
         )
 
+        prim_recorded = False
         if status_code == 200:
             usage_meta = result_json.get("usageMetadata", {})
             tokens = usage_meta.get("totalTokenCount", 0)
@@ -228,50 +314,62 @@ class GeminiVisionExtractor(BaseVisionExtractor):
                 duration_sec=duration,
                 is_fallback=False
             )
+            prim_recorded = True
 
             candidates = result_json.get("candidates", [])
             if not candidates:
-                return RawCardExtraction(note_o_anomalie=f"Nessun candidato restituito da {self.primary_label}")
-
-            text_content = self._extract_text_from_candidates(candidates)
-            card = self.parse_json_response(text_content)
-            if not self.is_valid_raw_extraction(card):
-                self.session_logger.logger.warning(
-                    f"[Gemini] Risposta o JSON non valido da {self.primary_label}: {card.note_o_anomalie}. Avvio failover/fallback..."
-                )
+                err_text = f"Nessun candidato restituito da {self.primary_label}"
+                self.session_logger.logger.warning(f"[Gemini] {err_text}. Avvio failover/fallback...")
             else:
-                card.tempo_elaborazione_sec = round(duration, 1)
-                card.costo_usd = 0.0
-                if card.scheda_capovolta and not _is_retry_after_rotation:
+                text_content = self._extract_text_from_candidates(candidates)
+                finish_reason = self._extract_finish_reason(candidates)
+                card = self.parse_json_response(text_content, finish_reason=finish_reason)
+                if not self.is_valid_raw_extraction(card):
+                    err_text = card.note_o_anomalie or "Risposta o JSON incompleto/non valido"
                     self.session_logger.logger.warning(
-                        f"[Gemini] Scheda rilevata capovolta (180°): rotazione fisica su disco e ri-analisi immediata."
+                        f"[Gemini] Risposta o JSON non valido/incompleto da {self.primary_label}: {err_text}. Avvio failover/fallback..."
                     )
-                    try:
-                        from ..scanner.scanner_service import ScannerService
-                        ScannerService.rotate_image_file_180(image_path)
-                        return self.extract_from_image(image_path, _is_retry_after_rotation=True)
-                    except Exception as e:
-                        self.session_logger.logger.error(f"[Gemini] Errore rotazione 180° e re-analisi: {e}")
-                badge = f"[Google Gemini ({self.model}) | {duration:.1f}s | Gratis]"
-                if badge not in (card.note_o_anomalie or ""):
-                    card.note_o_anomalie = f"{badge} {card.note_o_anomalie or ''}".strip()
-                return card
+                else:
+                    card.tempo_elaborazione_sec = round(duration, 1)
+                    card.costo_usd = 0.0
+                    if card.scheda_capovolta and not _is_retry_after_rotation:
+                        self.session_logger.logger.warning(
+                            f"[Gemini] Scheda rilevata capovolta (180°): rotazione fisica su disco e ri-analisi immediata."
+                        )
+                        try:
+                            from ..scanner.scanner_service import ScannerService
+                            ScannerService.rotate_image_file_180(image_path)
+                            retry_card = self.extract_from_image(
+                                image_path,
+                                _is_retry_after_rotation=True,
+                                status_callback=status_callback,
+                            )
+                            retry_card.was_rotated_180 = True
+                            return retry_card
+                        except Exception as e:
+                            self.session_logger.logger.error(f"[Gemini] Errore rotazione 180° e re-analisi: {e}")
+                    badge = f"[Google Gemini ({self.model}) | {duration:.1f}s | Gratis]"
+                    if badge not in (card.note_o_anomalie or ""):
+                        card.note_o_anomalie = f"{badge} {card.note_o_anomalie or ''}".strip()
+                    return card
 
         # 2. Se fallisce con codice 429 o errore
-        self.tracker.record_call(
-            provider=prim_provider,
-            model=self.model,
-            status_code=status_code,
-            tokens=0,
-            duration_sec=duration,
-            is_fallback=False,
-            note=f"Errore HTTP {status_code}"
-        )
+        if not prim_recorded:
+            self.tracker.record_call(
+                provider=prim_provider,
+                model=self.model,
+                status_code=status_code,
+                tokens=0,
+                duration_sec=duration,
+                is_fallback=False,
+                note=f"Errore HTTP {status_code}"
+            )
 
         # Se il fallback automatico non è abilitato, restituisci errore diretto
         if not self.enable_auto_fallback:
             return RawCardExtraction(
-                note_o_anomalie=f"Errore {self.primary_label} HTTP {status_code}: {err_text}"
+                note_o_anomalie=f"Errore {self.primary_label} HTTP {status_code}: {err_text}",
+                is_incomplete=True,
             )
 
         # 3. Failover su Seconda Chiave Gemini (stesso identico modello primario)
@@ -293,10 +391,27 @@ class GeminiVisionExtractor(BaseVisionExtractor):
                 candidates = fb_json.get("candidates", [])
                 if candidates:
                     text_content = self._extract_text_from_candidates(candidates)
-                    card = self.parse_json_response(text_content)
+                    finish_reason = self._extract_finish_reason(candidates)
+                    card = self.parse_json_response(text_content, finish_reason=finish_reason)
                     if self.is_valid_raw_extraction(card):
                         card.tempo_elaborazione_sec = round(fb_dur, 1)
                         card.costo_usd = 0.0
+                        if card.scheda_capovolta and not _is_retry_after_rotation:
+                            self.session_logger.logger.warning(
+                                f"[Gemini Backup] Scheda rilevata capovolta (180°): rotazione fisica su disco e ri-analisi immediata."
+                            )
+                            try:
+                                from ..scanner.scanner_service import ScannerService
+                                ScannerService.rotate_image_file_180(image_path)
+                                retry_card = self.extract_from_image(
+                                    image_path,
+                                    _is_retry_after_rotation=True,
+                                    status_callback=status_callback,
+                                )
+                                retry_card.was_rotated_180 = True
+                                return retry_card
+                            except Exception as e:
+                                self.session_logger.logger.error(f"[Gemini Backup] Errore rotazione 180° e re-analisi: {e}")
                         fallback_msg = f"[Failover {self.backup_label}] [Google Gemini ({self.model}) | {fb_dur:.1f}s | Gratis]: Quota esaurita su {self.primary_label}."
                         card.note_o_anomalie = f"{fallback_msg} {card.note_o_anomalie or ''}".strip()
                         return card
@@ -325,7 +440,7 @@ class GeminiVisionExtractor(BaseVisionExtractor):
                 else:
                     fb_disp = getattr(self.fallback_extractor, "display_name", fb_model)
                     fallback_msg = f"[Fallback OpenRouter ({fb_disp})]: Google non disponibile (HTTP {status_code})."
-                if card.righe_scatole or not (card.note_o_anomalie and "Limite quota" in card.note_o_anomalie):
+                if not getattr(card, "is_incomplete", False) and (card.righe_scatole or not (card.note_o_anomalie and "Limite quota" in card.note_o_anomalie)):
                     card.note_o_anomalie = f"{fallback_msg} {card.note_o_anomalie or ''}".strip()
                     return card
             except Exception as e:

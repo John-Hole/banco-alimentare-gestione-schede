@@ -68,7 +68,7 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
-            "max_tokens": 4096
+            "max_tokens": 8192
         }
 
         if self.reasoning_effort:
@@ -78,7 +78,7 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
 
         t0 = time.time()
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=(5, 20))
+            resp = requests.post(url, headers=headers, json=payload, timeout=(5, 30))
             duration = time.time() - t0
             if resp.status_code != 200:
                 self.session_logger.log_ai_result("OpenRouter", "OpenRouter", self.model, resp.status_code, duration, is_success=False, error_msg=resp.text[:300])
@@ -117,48 +117,53 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
             self.api_key, img_data, mime_type
         )
 
+        prim_recorded = False
         if status_code == 200:
             choices = result_json.get("choices", [])
             tokens = result_json.get("usage", {}).get("total_tokens", 0)
             cost = float(result_json.get("usage", {}).get("cost") or 0.0)
             self.tracker.record_call(provider="openrouter", model=self.model, status_code=200, tokens=tokens, duration_sec=duration, is_fallback=False)
+            prim_recorded = True
             if not choices:
-                if self.fallback_extractor:
-                    return self.fallback_extractor.extract_from_image(image_path)
-                return RawCardExtraction(note_o_anomalie="Nessuna risposta da OpenRouter")
-
-            msg = choices[0].get("message", {})
-            text_content = msg.get("content", "")
-            if not text_content or not text_content.strip():
-                text_content = msg.get("reasoning", "") or msg.get("reasoning_content", "") or ""
-            card = self.parse_json_response(text_content)
-            if not self.is_valid_raw_extraction(card):
-                self.session_logger.logger.warning(
-                    f"[OpenRouter] Risposta o JSON non valido dal modello {self.model}: {card.note_o_anomalie}. Avvio fallback..."
-                )
+                err_text = "Nessuna scelta restituita da OpenRouter"
+                self.session_logger.logger.warning(f"[OpenRouter] {err_text} ({self.model}). Avvio fallback...")
             else:
-                card.tempo_elaborazione_sec = round(duration, 1)
-                card.costo_usd = cost
-                disp_name = self.display_name or f"OpenRouter ({self.model})"
-                cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
-                badge = f"[{disp_name} | {duration:.1f}s | {cost_str}]"
-                if badge not in (card.note_o_anomalie or ""):
-                    card.note_o_anomalie = f"{badge} {card.note_o_anomalie or ''}".strip()
-                return card
+                c0 = choices[0] if isinstance(choices[0], dict) else {}
+                msg = c0.get("message", {}) or {}
+                finish_reason = str(c0.get("finish_reason") or "").strip()
+                text_content = msg.get("content", "")
+                if not text_content or not text_content.strip():
+                    text_content = msg.get("reasoning", "") or msg.get("reasoning_content", "") or ""
+                card = self.parse_json_response(text_content, finish_reason=finish_reason)
+                if not self.is_valid_raw_extraction(card):
+                    err_text = card.note_o_anomalie or "Risposta o JSON incompleto/non valido"
+                    self.session_logger.logger.warning(
+                        f"[OpenRouter] Risposta o JSON non valido/incompleto dal modello {self.model}: {err_text}. Avvio fallback..."
+                    )
+                else:
+                    card.tempo_elaborazione_sec = round(duration, 1)
+                    card.costo_usd = cost
+                    disp_name = self.display_name or f"OpenRouter ({self.model})"
+                    cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
+                    badge = f"[{disp_name} | {duration:.1f}s | {cost_str}]"
+                    if badge not in (card.note_o_anomalie or ""):
+                        card.note_o_anomalie = f"{badge} {card.note_o_anomalie or ''}".strip()
+                    return card
 
         # Se fallisce, registra errore
-        self.tracker.record_call(
-            provider="openrouter",
-            model=self.model,
-            status_code=status_code,
-            tokens=0,
-            duration_sec=duration,
-            is_fallback=False,
-            note=err_text[:100]
-        )
+        if not prim_recorded:
+            self.tracker.record_call(
+                provider="openrouter",
+                model=self.model,
+                status_code=status_code,
+                tokens=0,
+                duration_sec=duration,
+                is_fallback=False,
+                note=err_text[:100]
+            )
 
         if not self.enable_auto_fallback:
-            return RawCardExtraction(note_o_anomalie=f"Errore OpenRouter HTTP {status_code}: {err_text}")
+            return RawCardExtraction(note_o_anomalie=f"Errore OpenRouter HTTP {status_code}: {err_text}", is_incomplete=True)
 
         # 2. Failover su Seconda Chiave OpenRouter (se presente)
         if self.backup_api_key and self.backup_api_key != self.api_key:
@@ -179,11 +184,13 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
                     note="Failover su Chiave OpenRouter Backup"
                 )
                 if choices:
-                    msg = choices[0].get("message", {})
+                    c0 = choices[0] if isinstance(choices[0], dict) else {}
+                    msg = c0.get("message", {}) or {}
+                    finish_reason = str(c0.get("finish_reason") or "").strip()
                     text_content = msg.get("content", "")
                     if not text_content or not text_content.strip():
                         text_content = msg.get("reasoning", "") or msg.get("reasoning_content", "") or ""
-                    card = self.parse_json_response(text_content)
+                    card = self.parse_json_response(text_content, finish_reason=finish_reason)
                     if self.is_valid_raw_extraction(card):
                         card.tempo_elaborazione_sec = round(fb_dur, 1)
                         card.costo_usd = cost

@@ -47,6 +47,7 @@ class RawCardExtraction(BaseModel):
     was_rotated_180: bool = False
     tempo_elaborazione_sec: Optional[float] = None
     costo_usd: Optional[float] = None
+    is_incomplete: bool = False
 
     @property
     def scatole(self) -> List[BoxItem]:

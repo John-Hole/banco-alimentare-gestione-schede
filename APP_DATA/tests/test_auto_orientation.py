@@ -19,11 +19,13 @@ class TestAutoOrientation(unittest.TestCase):
 
     def tearDown(self):
         for p in self.tmp_files:
-            if p.exists():
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
+            p = Path(p)
+            for candidate in (p, p.with_suffix(".raw.jpg")):
+                if candidate.exists():
+                    try:
+                        candidate.unlink()
+                    except Exception:
+                        pass
 
     def test_is_page_upside_down_detection(self):
         """Verifica che una scheda dritta venga riconosciuta come non capovolta, e capovolta se ruotata di 180°."""
@@ -85,26 +87,35 @@ class TestAutoOrientation(unittest.TestCase):
             self.assertFalse(ScannerService.is_page_upside_down(im), "Deve essere orientata per il verso giusto")
 
     def test_prepare_uploaded_files_auto_rotates(self):
-        """Verifica che prepare_uploaded_files corregga automaticamente i file caricati rovesciati."""
+        """Verifica che prepare_uploaded_files corregga automaticamente i file caricati rovesciati (in sandbox temporanea)."""
+        import tempfile
+        from unittest.mock import patch
+        from src.services.history_service import HistoryService
+
         src_path = TEST_IMAGES_DIR / "scan_batch_20261024_105521_page01.jpg"
         if not src_path.exists():
             self.skipTest("Immagine di test page01 non presente")
 
-        inv_file = TEST_IMAGES_DIR / "tmp_test_for_upload.jpg"
-        self.tmp_files.append(inv_file)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            work_dir = tmp_root / "test_images"
+            work_dir.mkdir(parents=True, exist_ok=True)
+            hist = HistoryService(custom_storico_dir=tmp_root / "SCANSIONI")
+            inv_file = work_dir / "tmp_test_for_upload.jpg"
 
-        with Image.open(src_path) as im:
-            im.rotate(180, expand=True).save(str(inv_file), format="JPEG", quality=95)
+            with Image.open(src_path) as im:
+                im.rotate(180, expand=True).save(str(inv_file), format="JPEG", quality=95)
 
-        ready, warnings = ScannerService.prepare_uploaded_files([str(inv_file)])
-        self.assertEqual(len(ready), 1)
-        self.tmp_files.extend(ready)
+            with patch("src.scanner.scanner_service.TEST_IMAGES_DIR", work_dir):
+                with patch("src.services.history_service.get_history_service", return_value=hist):
+                    ready, warnings = ScannerService.prepare_uploaded_files([str(inv_file)])
 
-        with Image.open(ready[0]) as im:
-            self.assertFalse(
-                ScannerService.is_page_upside_down(im),
-                "Il file preparato per il caricamento deve essere stato rigirato nel verso corretto"
-            )
+            self.assertEqual(len(ready), 1)
+            with Image.open(ready[0]) as im:
+                self.assertFalse(
+                    ScannerService.is_page_upside_down(im),
+                    "Il file preparato per il caricamento deve essere stato rigirato nel verso corretto"
+                )
 
     def test_raw_card_extraction_scheda_capovolta_field(self):
         """Verifica che il campo scheda_capovolta sia supportato nel modello e nel parser JSON."""

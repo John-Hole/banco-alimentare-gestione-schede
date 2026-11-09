@@ -102,9 +102,15 @@ def test_gemini_generation(
     if clean_model.startswith("models/"):
         clean_model = clean_model[7:]
     endpoint = f"{GEMINI_BASE_URL}/models/{clean_model}:generateContent"
+    clean_lower = clean_model.lower()
+    gen_cfg: Dict[str, Any] = {"maxOutputTokens": 64 if clean_lower.startswith(("gemini-3", "gemini-4", "gemini-5")) else 10}
+    if clean_lower.startswith(("gemini-3", "gemini-4", "gemini-5")):
+        gen_cfg["thinkingConfig"] = {"thinkingLevel": "LOW"}
+    else:
+        gen_cfg["temperature"] = 0.0
     payload = {
         "contents": [{"parts": [{"text": "ping"}]}],
-        "generationConfig": {"maxOutputTokens": 10, "temperature": 0.0},
+        "generationConfig": gen_cfg,
     }
     t0 = time.time()
     try:

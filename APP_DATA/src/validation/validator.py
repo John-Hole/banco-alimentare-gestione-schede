@@ -198,6 +198,16 @@ class CardValidator:
                 )
             )
 
+        # 4b. Difesa in profondita': blocca qualsiasi estrazione segnata come incompleta o troncata
+        if getattr(raw, "is_incomplete", False):
+            flags.append(
+                ValidationFlag(
+                    severity=FlagSeverity.RED,
+                    field="estrazione_incompleta",
+                    message="Estrazione IA incompleta o risposta troncata (dati parziali non affidabili): rianalizzare la scheda prima di salvare.",
+                )
+            )
+
         # 5. Regola 6.4: Mancanza dati riga per riga con solo totale presente
         ha_scatole = len(raw.righe_scatole) > 0
         ha_totale_dichiarato = (
@@ -454,9 +464,9 @@ class CardValidator:
                 cat.flags.append(flag)
                 new_flags.append(flag)
 
-        # Aggiungi eventuali flag di numero scheda preesistenti
+        # Aggiungi eventuali flag di numero scheda o stato estrazione preesistenti
         for f in card.flags:
-            if f.field in ("numero_scheda", "supermercato", "note"):
+            if f.field in ("numero_scheda", "supermercato", "note", "estrazione_incompleta"):
                 new_flags.append(f)
 
         card.flags = new_flags

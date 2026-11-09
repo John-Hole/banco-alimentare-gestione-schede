@@ -15,6 +15,7 @@ LOGS_DIR = APP_DATA_DIR / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
 STORICO_DIR = ROOT_DIR / "SCANSIONI"
 STORICO_DIR.mkdir(exist_ok=True)
+SUGGERIMENTI_DIR = ROOT_DIR / "SUGGERIMENTI"
 
 CONFIG_FILE = APP_DATA_DIR / "config.json"
 
@@ -135,15 +136,43 @@ SUPPORTED_OPENROUTER_MODELS: List[str] = [
     "anthropic/claude-sonnet-5.5",
     "nvidia/nemotron-3.5-super-vl:free",
 ]
-DEFAULT_OPENROUTER_MODEL = "openai/gpt-6-luna"
+DEFAULT_OPENROUTER_MODEL = "anthropic/claude-haiku-5.5"
 
-# Modelli specifici dell'Architettura a Cascata Banco Alimentare (v1 e v2)
+# Modelli specifici dell'Architettura a Cascata Personalizzabile Banco Alimentare
 DEFAULT_CASCADE_GEMINI_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_CASCADE_V2_PRIMARY_MODEL = "gemini-3.8-flash"
-DEFAULT_CASCADE_BUFFER_MODEL = "openai/gpt-6-luna"
+DEFAULT_CASCADE_LUNA_MODEL = "openai/gpt-6-luna"
 DEFAULT_CASCADE_HAIKU_MODEL = "anthropic/claude-haiku-5.5"
+DEFAULT_CASCADE_BUFFER_MODEL = "anthropic/claude-haiku-5.5"
 DEFAULT_CASCADE_FREE_MODEL = "nvidia/nemotron-3.5-super-vl:free"
 DEFAULT_CASCADE_ARBITRATOR_MODEL = "anthropic/claude-haiku-5.5"
+
+# Opzioni delle 3 Sezioni della Cascata Personalizzabile
+CASCADE_FREE_MODES: Dict[str, str] = {
+    "gemini_35": "🆓 Solo Gemini 3.5 Flash-Lite (Gratis · 2 Chiavi)",
+    "gemini_38": "✨ Solo Gemini 3.8 Flash (Gratis · 2 Chiavi)",
+    "gemini_38_then_35": "⚡ Gemini 3.8 ➔ Gemini 3.5 (Gratis · 2 Chiavi)",
+    "gemini_35_then_38": "🆓 Gemini 3.5 ➔ Gemini 3.8 (Gratis · 2 Chiavi)",
+}
+CASCADE_FREE_INV_MAP: Dict[str, str] = {v: k for k, v in CASCADE_FREE_MODES.items()}
+DEFAULT_CASCADE_FREE_PRIMARY_MODE = "gemini_35"
+
+CASCADE_PAID_MODES: Dict[str, str] = {
+    "haiku": "🦅 Claude Haiku 5.5 Low (~$0.0025 — Default)",
+    "luna": "🌙 GPT-6 Luna Low (~$0.0016)",
+    "haiku_then_luna": "🦅➔🌙 Prima Haiku 5.5, poi GPT-6 Luna",
+    "luna_then_haiku": "🌙➔🦅 Prima GPT-6 Luna, poi Haiku 5.5",
+    "none": "⚪ Disattivato (Nessun modello a pagamento)",
+}
+CASCADE_PAID_INV_MAP: Dict[str, str] = {v: k for k, v in CASCADE_PAID_MODES.items()}
+DEFAULT_CASCADE_PAID_MODE = "haiku"
+
+CASCADE_FALLBACK_MODES: Dict[str, str] = {
+    "nemotron_free": "🆓 Nemotron 3.5 Super-VL Free ($0.00 — Default)",
+    "none": "⚪ Disattivato",
+}
+CASCADE_FALLBACK_INV_MAP: Dict[str, str] = {v: k for k, v in CASCADE_FALLBACK_MODES.items()}
+DEFAULT_CASCADE_FALLBACK_MODE = "nemotron_free"
 
 # Modelli selezionabili per l'Arbitro Matematico (controllo discrepanze quadrature)
 SUPPORTED_ARBITRATOR_MODELS: List[str] = [
@@ -183,10 +212,10 @@ SCANNER_DPI_CHOICES: List[int] = [150, 200, 300, 400, 600]
 DEFAULT_SCANNER_OPTIONS: Dict[str, Any] = {
     "scanner_default_source": "adf",   # 'adf' (Alimentatore Automatico) | 'flatbed' (Piano Vetro)
     "scanner_dpi": 200,
-    "scanner_auto_optimize": True,
+    "scanner_auto_optimize": False,    # Disattivato: nessun aumento gamma/luminosità nascosto
     "auto_preset_assignment": False,   # Default False: usa P0 (standard senza modifiche); True: auto-detect P1..P5
     "image_brightness": 1.0,           # Luminosità taratura (0.50 - 1.50, default 1.0 = 0%)
-    "image_contrast": 1.0,             # Contrasto taratura (0.50 - 2.50, default 1.0)
+    "image_contrast": 1.0,             # Contrasto taratura (0.50 - 3.00, default 1.0)
     "image_sharpness": 1.0,            # Nitidezza taratura (0.50 - 3.00, default 1.0)
 }
 
@@ -250,7 +279,7 @@ SHORTCUT_DESCRIPTIONS: Dict[str, str] = {
 def load_app_config() -> Dict[str, Any]:
     """Carica la configurazione da config.json se presente, altrimenti valori di default."""
     defaults = {
-        "active_provider": "cascade",  # 'openrouter', 'gemini_1', 'gemini_2'
+        "active_provider": "cascade",
         "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
         "gemini_api_key_2": os.getenv("GEMINI_API_KEY_2", ""),
         "gemini_model": DEFAULT_GEMINI_MODEL,
@@ -264,11 +293,19 @@ def load_app_config() -> Dict[str, Any]:
         "storico_folder": str(STORICO_DIR),
         "shortcuts": dict(DEFAULT_SHORTCUTS),
         **DEFAULT_SCANNER_OPTIONS,
+        "cascade_free_primary_mode": DEFAULT_CASCADE_FREE_PRIMARY_MODE,
+        "cascade_paid_mode": DEFAULT_CASCADE_PAID_MODE,
+        "cascade_fallback_mode": DEFAULT_CASCADE_FALLBACK_MODE,
         "openrouter_buffer_model": DEFAULT_CASCADE_BUFFER_MODEL,
         "openrouter_free_model": DEFAULT_CASCADE_FREE_MODEL,
         "openrouter_arbitrator_model": DEFAULT_CASCADE_ARBITRATOR_MODEL,
         "cascade_arbitrator_model": DEFAULT_CASCADE_ARBITRATOR_MODEL,
         "enable_auto_arbitrator": True,
+        "enable_arbitrator_on_free": True,
+        "enable_arbitrator_on_paid": False,
+        "trello_api_key": os.getenv("TRELLO_API_KEY", ""),
+        "trello_token": os.getenv("TRELLO_TOKEN", ""),
+        "trello_list_id": os.getenv("TRELLO_LIST_ID", ""),
         "swap_panels": False,
     }
     if CONFIG_FILE.exists():
@@ -287,6 +324,8 @@ def load_app_config() -> Dict[str, Any]:
                     val = str(data.get(path_key) or "").strip()
                     if not val or not Path(val).exists():
                         data[path_key] = fallback_val
+                if "enable_arbitrator_on_free" not in data and "enable_auto_arbitrator" in data:
+                    data["enable_arbitrator_on_free"] = bool(data["enable_auto_arbitrator"])
                 defaults.update(data)
         except Exception:
             pass
@@ -303,50 +342,71 @@ def save_app_config(cfg: Dict[str, Any]) -> None:
 
 
 def get_pipeline_status(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Calcola lo stato dei 4 piani dell'architettura a cascata (verde/ambra/rosso) e la capacità giornaliera."""
+    """Calcola lo stato delle 3 sezioni della cascata personalizzabile e degli arbitri."""
     k1 = bool(str(cfg.get("gemini_api_key") or "").strip())
     k2 = bool(str(cfg.get("gemini_api_key_2") or "").strip())
     or_key = bool(str(cfg.get("openrouter_api_key") or "").strip())
 
     google_count = (1 if k1 else 0) + (1 if k2 else 0)
+    free_mode = cfg.get("cascade_free_primary_mode", DEFAULT_CASCADE_FREE_PRIMARY_MODE)
+    paid_mode = cfg.get("cascade_paid_mode", DEFAULT_CASCADE_PAID_MODE)
+    fallback_mode = cfg.get("cascade_fallback_mode", DEFAULT_CASCADE_FALLBACK_MODE)
+    arb_on_free = bool(cfg.get("enable_arbitrator_on_free", cfg.get("enable_auto_arbitrator", True)))
+    arb_on_paid = bool(cfg.get("enable_arbitrator_on_paid", False))
+    arb_model = cfg.get("cascade_arbitrator_model") or cfg.get("openrouter_arbitrator_model") or DEFAULT_CASCADE_ARBITRATOR_MODEL
 
-    # Piano A: Google Free
+    # Sezione 1: Modelli Google Free
+    free_label = CASCADE_FREE_MODES.get(free_mode, free_mode)
     if google_count == 2:
         phase_a_status = "green"
-        phase_a_desc = "2/2 Chiavi Google Attive · 1.000 RPD · 30 RPM (0,00 €)"
+        phase_a_desc = f"2/2 Chiavi Google Attive · 1.000 RPD · 30 RPM (0,00 €) · {free_label}"
         daily_cap = 1000
         rpm_cap = 30
     elif google_count == 1:
         phase_a_status = "amber"
-        phase_a_desc = "1/2 Chiave Google Attiva · 500 RPD · 15 RPM (0,00 €)"
+        phase_a_desc = f"1/2 Chiave Google Attiva · 500 RPD · 15 RPM (0,00 €) · {free_label}"
         daily_cap = 500
         rpm_cap = 15
     else:
         phase_a_status = "red"
-        phase_a_desc = "Nessuna chiave Google inserita (Piano A non disponibile)"
+        phase_a_desc = "Nessuna chiave Google inserita (Sezione 1 non disponibile)"
         daily_cap = 0
         rpm_cap = 0
 
-    # Piano B: OpenRouter Buffer (GPT-6 Luna)
-    if or_key:
+    # Sezione 2: Modelli a Pagamento OpenRouter
+    paid_label = CASCADE_PAID_MODES.get(paid_mode, paid_mode)
+    if paid_mode == "none":
+        phase_b_status = "amber"
+        phase_b_desc = "Disattivato dall'utente (nessuna spesa OpenRouter)"
+    elif or_key:
         phase_b_status = "green"
-        phase_b_desc = "Attivo · GPT-6 Luna Low (~0,16 c€/scheda)"
+        phase_b_desc = f"Attivo · {paid_label}"
     else:
         phase_b_status = "red"
         phase_b_desc = "Disattivato · Richiede OpenRouter API Key"
 
-    # Piano C: OpenRouter Fallback (Claude Haiku 5.5) + Paracadute Nemotron
-    if or_key:
+    # Sezione 3: Fallback Gratuito OpenRouter
+    fb_label = CASCADE_FALLBACK_MODES.get(fallback_mode, fallback_mode)
+    if fallback_mode == "none":
+        phase_c_status = "amber"
+        phase_c_desc = "Disattivato dall'utente"
+    elif or_key:
         phase_c_status = "green"
-        phase_c_desc = "Attivo · Claude Haiku 5.5 Low (~0,25 c€) + Nemotron Free"
+        phase_c_desc = f"Attivo · {fb_label}"
     else:
         phase_c_status = "red"
         phase_c_desc = "Disattivato · Richiede OpenRouter API Key"
 
-    # Piano D: Arbitro Matematico Haiku 5.5 & Sonnet 5.5 Manuale
-    if or_key:
+    # Arbitro Matematico (2 switch indipendenti: su Free / su Pagamento)
+    if not (arb_on_free or arb_on_paid):
         phase_d_status = "amber"
-        phase_d_desc = "Arbitro Haiku 5.5 attivo · Sonnet 5.5 solo con Shift+Click / Ctrl+Shift+R"
+        phase_d_desc = "Arbitro disattivato su Free e su Pagamento (Shift+Click sempre manuale)"
+    elif or_key or (arb_model.startswith("gemini") and google_count > 0):
+        phase_d_status = "amber"
+        phase_d_desc = (
+            f"Arbitro {arb_model} · Free: {'ON' if arb_on_free else 'OFF'} | "
+            f"Pagamento: {'ON' if arb_on_paid else 'OFF'}"
+        )
     else:
         phase_d_status = "red"
         phase_d_desc = "Disattivato · Richiede OpenRouter API Key"

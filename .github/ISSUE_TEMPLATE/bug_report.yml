@@ -1,0 +1,22 @@
+name: 🐛 Segnalazione Problema / Errore
+description: Segnala un comportamento anomalo o un errore incontrato durante la Colletta
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: input
+    id: autore
+    attributes:
+      label: Nome / Postazione (opzionale)
+      placeholder: "Es. Postazione A - Perugia"
+  - type: textarea
+    id: descrizione
+    attributes:
+      label: Cosa è successo?
+      placeholder: Descrivi cosa stavi facendo e cosa è successo invece di quanto atteso...
+    validations:
+      required: true
+  - type: textarea
+    id: contesto
+    attributes:
+      label: Dettagli utili (opzionale)
+      description: Ad es. modello IA attivo, tipo scansione (ADF / Vetro / PDF), o testo dell'errore mostrato a video.

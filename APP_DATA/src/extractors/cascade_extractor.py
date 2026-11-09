@@ -52,7 +52,7 @@ from typing import Callable, Optional, Dict, Any, Tuple, List
 
 from .base import BaseVisionExtractor, EXTRACTION_SYSTEM_PROMPT
 
-from .gemini_extractor import GEMINI_RESPONSE_SCHEMA, GeminiVisionExtractor
+from .gemini_extractor import GEMINI_RESPONSE_SCHEMA, GeminiVisionExtractor, build_gemini_generation_config
 
 from ..models import RawCardExtraction, BoxItem
 
@@ -62,6 +62,8 @@ from ..config import (
 
     DEFAULT_CASCADE_V2_PRIMARY_MODEL,
 
+    DEFAULT_CASCADE_LUNA_MODEL,
+
     DEFAULT_CASCADE_BUFFER_MODEL,
 
     DEFAULT_CASCADE_HAIKU_MODEL,
@@ -69,6 +71,12 @@ from ..config import (
     DEFAULT_CASCADE_FREE_MODEL,
 
     DEFAULT_CASCADE_ARBITRATOR_MODEL,
+
+    DEFAULT_CASCADE_FREE_PRIMARY_MODE,
+
+    DEFAULT_CASCADE_PAID_MODE,
+
+    DEFAULT_CASCADE_FALLBACK_MODE,
 
     normalize_category_name,
 
@@ -84,7 +92,7 @@ from ..services.session_logger import get_session_logger
 
 class CascadeVisionExtractor(BaseVisionExtractor):
 
-    """Motore di estrazione a cascata multi-tier con failover automatico e arbitraggio matematico."""
+    """Motore di estrazione a cascata multi-tier personalizzabile a 3 sezioni con doppio controllo arbitro."""
 
 
 
@@ -112,11 +120,23 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
         enable_auto_arbitrator: bool = True,
 
+        enable_arbitrator_on_free: Optional[bool] = None,
+
+        enable_arbitrator_on_paid: Optional[bool] = None,
+
+        free_primary_mode: Optional[str] = None,
+
+        paid_mode: Optional[str] = None,
+
+        fallback_mode: Optional[str] = None,
+
+        luna_model: str = DEFAULT_CASCADE_LUNA_MODEL,
+
         quota_tracker: Optional[Any] = None,
 
         free_fallback_model: Optional[str] = None,
 
-        variant: str = "v1",
+        variant: Optional[str] = None,
 
         **kwargs,
 
@@ -134,13 +154,15 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
 
 
-        self.variant = (variant or "v1").lower().strip()
+        self.gemini_model = gemini_model or DEFAULT_CASCADE_GEMINI_MODEL
 
-        self.gemini_model = gemini_model
+        self.gemini_38_model = gemini_38_model or DEFAULT_CASCADE_V2_PRIMARY_MODEL
 
-        self.gemini_38_model = gemini_38_model
+        self.buffer_model = buffer_model or DEFAULT_CASCADE_BUFFER_MODEL
 
-        self.buffer_model = buffer_model
+        self.luna_model = (
+            buffer_model if (buffer_model and "luna" in str(buffer_model).lower()) else (luna_model or DEFAULT_CASCADE_LUNA_MODEL)
+        )
 
 
 
@@ -162,9 +184,49 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
 
 
+        # Risoluzione 3 Sezioni Cascata (con compatibilità per legacy variant="v1"/"v2" esplicito)
+        if free_primary_mode is None and paid_mode is None and fallback_mode is None:
+            if variant is not None:
+                v_norm = str(variant).lower().strip()
+                if v_norm == "v2":
+                    self.free_primary_mode = "gemini_38_then_35"
+                    self.paid_mode = "luna_then_haiku"
+                    self.fallback_mode = "nemotron_free"
+                    self.variant = "v2"
+                else:
+                    self.free_primary_mode = "gemini_35"
+                    self.paid_mode = "luna_then_haiku"
+                    self.fallback_mode = "nemotron_free"
+                    self.variant = "v1"
+            else:
+                self.free_primary_mode = DEFAULT_CASCADE_FREE_PRIMARY_MODE
+                self.paid_mode = DEFAULT_CASCADE_PAID_MODE
+                self.fallback_mode = DEFAULT_CASCADE_FALLBACK_MODE
+                self.variant = "v1"
+        else:
+            if variant is not None and str(variant).lower().strip() == "v2":
+                default_free = "gemini_38_then_35"
+                self.variant = "v2"
+            else:
+                default_free = DEFAULT_CASCADE_FREE_PRIMARY_MODE
+                self.variant = (variant or "v1").lower().strip()
+            self.free_primary_mode = (free_primary_mode or default_free).strip().lower()
+            self.paid_mode = (paid_mode or DEFAULT_CASCADE_PAID_MODE).strip().lower()
+            self.fallback_mode = (fallback_mode or DEFAULT_CASCADE_FALLBACK_MODE).strip().lower()
+
+
+
         self.arbitrator_model = arbitrator_model
 
         self.enable_auto_arbitrator = bool(enable_auto_arbitrator or kwargs.get("enable_paid_arbitration", False))
+        self.enable_arbitrator_on_free = bool(
+            self.enable_auto_arbitrator if enable_arbitrator_on_free is None else enable_arbitrator_on_free
+        )
+        self.enable_arbitrator_on_paid = bool(
+            False if enable_arbitrator_on_paid is None else enable_arbitrator_on_paid
+        )
+        if enable_arbitrator_on_free is not None or enable_arbitrator_on_paid is not None:
+            self.enable_auto_arbitrator = bool(self.enable_arbitrator_on_free or self.enable_arbitrator_on_paid)
 
 
 
@@ -238,19 +300,13 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
             ],
 
-            "generationConfig": {
+            "generationConfig": build_gemini_generation_config(
 
-                "response_mime_type": "application/json",
+                m_name,
 
-                "response_schema": GEMINI_RESPONSE_SCHEMA,
+                is_arbitration=bool(custom_prompt),
 
-                "temperature": 0.0,
-
-                "maxOutputTokens": 4096,
-
-                "thinkingConfig": {"thinkingBudget": 1024}
-
-            }
+            )
 
         }
 
@@ -258,7 +314,7 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
         try:
 
-            resp = requests.post(url, json=payload, timeout=(5, 15))
+            resp = requests.post(url, json=payload, timeout=(5, 30))
 
             duration = time.time() - t0
 
@@ -276,7 +332,23 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
             data = resp.json()
 
-            tokens = data.get("usageMetadata", {}).get("totalTokenCount", 0)
+            usage_meta = data.get("usageMetadata", {})
+
+            tokens = usage_meta.get("totalTokenCount", 0)
+
+            fr = GeminiVisionExtractor._extract_finish_reason(data.get("candidates", []))
+
+            if fr and fr.upper() not in self._NORMAL_FINISH_REASONS:
+
+                self.session_logger.logger.warning(
+
+                    f"[CASCADE] Gemini {m_name} ({key_label}) finishReason={fr} "
+
+                    f"(thoughts={usage_meta.get('thoughtsTokenCount', 0)}, "
+
+                    f"out={usage_meta.get('candidatesTokenCount', 0)}, tot={tokens})"
+
+                )
 
             self.session_logger.log_ai_result(
 
@@ -390,7 +462,7 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
             "temperature": 0.0,
 
-            "max_tokens": 4096
+            "max_tokens": 8192
 
         }
 
@@ -408,7 +480,7 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
         try:
 
-            resp = requests.post(url, headers=headers, json=payload, timeout=(5, 20))
+            resp = requests.post(url, headers=headers, json=payload, timeout=(5, 30))
 
             duration = time.time() - t0
 
@@ -476,7 +548,22 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
     # -------------------------------------------------------------------------
 
-    def _validate_math(self, raw: RawCardExtraction) -> List[Dict[str, Any]]:
+    def _is_distinct_arbitrator(self, winner_model: str = "") -> bool:
+        """Evita di invocare un modello arbitro identico al modello che ha già eseguito l'estrazione."""
+        arb = (self.arbitrator_model or "").strip().lower()
+        if not arb:
+            return False
+        win = (winner_model or "").strip().lower()
+        if win and arb == win:
+            return False
+        return True
+
+    def _validate_math(
+        self,
+        raw: RawCardExtraction,
+        allow_arbitration: Optional[bool] = None,
+        winner_model: str = "",
+    ) -> List[Dict[str, Any]]:
 
         """Verifica la coerenza tra somma dei kg delle scatole e totale dichiarato per ciascuna colonna."""
 
@@ -602,11 +689,15 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
 
 
+        effective_will_arb = (
+            self.enable_auto_arbitrator if allow_arbitration is None else bool(allow_arbitration)
+        ) and self._is_distinct_arbitrator(winner_model)
+
         self.session_logger.log_math_validation(
 
             discrepancies,
 
-            will_arbitrate=bool(has_arb_key and self.arbitrator_model and discrepancies and self.enable_auto_arbitrator),
+            will_arbitrate=bool(has_arb_key and self.arbitrator_model and discrepancies and effective_will_arb),
 
             arbitrator_model=self.arbitrator_model,
 
@@ -672,9 +763,19 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
         """
 
-        gem_key = self.gemini_key_1 or self.gemini_key_2 or self.k1 or self.k2
+        model_to_use = self.gemini_model
+        k1_val = (getattr(self, "gemini_key_1", "") or self.k1 or "").strip()
+        k2_val = (getattr(self, "gemini_key_2", "") or self.k2 or "").strip()
+        raw_candidates: List[Tuple[str, str, str]] = []
+        if k1_val:
+            raw_candidates.append((k1_val, "Google 1", "gemini_1"))
+        if k2_val and k2_val != k1_val:
+            raw_candidates.append((k2_val, "Google 2", "gemini_2"))
+        non_ex = [c for c in raw_candidates if not self.tracker.is_exhausted(c[2], model_to_use)]
+        ex = [c for c in raw_candidates if c not in non_ex]
+        candidate_keys = non_ex + ex
 
-        if not gem_key or not discrepancies:
+        if not candidate_keys or not discrepancies:
 
             return raw
 
@@ -733,39 +834,45 @@ class CascadeVisionExtractor(BaseVisionExtractor):
             "5. Restituisci l'intero JSON con i valori corretti e la spiegazione in note_o_anomalie."
         )
 
-        label = "Google 1" if (self.k1 or self.gemini_key_1) else "Google 2"
+        arb_raw: Optional[RawCardExtraction] = None
 
-        model_to_use = self.gemini_model
+        for gem_key, label, _prov in candidate_keys:
 
+            status, res_json, err, dur = self._call_gemini(
 
+                gem_key, img_data, mime_type, key_label=label,
 
-        self.session_logger.log_ai_attempt("ARBITRO FLASH GRATUITO", "Google", model_to_use, key_label=label)
+                model_name=model_to_use, tier_label="ARBITRO FLASH GRATUITO",
 
-        t0 = time.time()
+                custom_prompt=prompt_arbitro
 
-        status, res_json, err, dur = self._call_gemini(
+            )
 
-            gem_key, img_data, mime_type, key_label=label,
+            if status != 200:
 
-            model_name=model_to_use, tier_label="ARBITRO FLASH GRATUITO",
+                continue
 
-            custom_prompt=prompt_arbitro
+            candidates = res_json.get("candidates", [])
 
-        )
+            txt = GeminiVisionExtractor._extract_text_from_candidates(candidates)
 
-        if status != 200:
+            finish_reason = GeminiVisionExtractor._extract_finish_reason(candidates)
 
-            return raw
+            candidate_raw = self.parse_json_response(txt, finish_reason=finish_reason)
 
+            if self._is_valid_raw_extraction(candidate_raw) and candidate_raw.righe_scatole:
 
+                arb_raw = candidate_raw
 
-        candidates = res_json.get("candidates", [])
+                break
 
-        txt = GeminiVisionExtractor._extract_text_from_candidates(candidates)
+            self.session_logger.logger.warning(
 
-        arb_raw = self.parse_json_response(txt)
+                f"[ARBITRO FLASH] Risposta incompleta o non valida ({label}): {candidate_raw.note_o_anomalie}"
 
-        if not arb_raw.righe_scatole:
+            )
+
+        if arb_raw is None:
 
             return raw
 
@@ -871,16 +978,6 @@ class CascadeVisionExtractor(BaseVisionExtractor):
                 raw.note_o_anomalie = (raw.note_o_anomalie + f" [{gemini_notes}]").strip()
             raw.note_o_anomalie = (raw.note_o_anomalie + f" [Riconciliato da Arbitro Gemini Flash: {res_str}]").strip()
 
-            self.session_logger.log_ai_result(
-
-                "ARBITRO FLASH GRATUITO", "Google", model_to_use, 200, dur,
-
-                tokens=res_json.get("usageMetadata", {}).get("totalTokenCount", 0),
-
-                is_success=True, cost_usd=0.0
-
-            )
-
 
 
         return raw
@@ -914,69 +1011,84 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
         if is_gemini_arb:
 
-            gem_key = self.gemini_key_1 or self.gemini_key_2
+            k1_val = (getattr(self, "gemini_key_1", "") or self.k1 or "").strip()
+            k2_val = (getattr(self, "gemini_key_2", "") or self.k2 or "").strip()
+            raw_gem_keys: List[Tuple[str, str, str]] = []
+            if k1_val:
+                raw_gem_keys.append((k1_val, "Google 1", "gemini_1"))
+            if k2_val and k2_val != k1_val:
+                raw_gem_keys.append((k2_val, "Google 2", "gemini_2"))
+            non_ex = [c for c in raw_gem_keys if not self.tracker.is_exhausted(c[2], self.arbitrator_model)]
+            ex = [c for c in raw_gem_keys if c not in non_ex]
+            gem_keys = non_ex + ex
 
-            if not gem_key:
+            if not gem_keys:
 
                 self.session_logger.log_arbitration_result(self.arbitrator_model, success=False, duration_sec=0.0, details="Chiave Google mancante per arbitro Gemini")
 
                 return raw
 
-            status, res_json, err, dur = self._call_gemini(
+            last_err = ""
+            last_dur = 0.0
+            for gem_key, key_lbl, _prov in gem_keys:
 
-                gem_key, img_data, mime_type, key_label="Google Arbitro",
+                status, res_json, err, dur = self._call_gemini(
 
-                model_name=self.arbitrator_model, tier_label="ARBITRO MATEMATICO",
+                    gem_key, img_data, mime_type, key_label=f"Google Arbitro ({key_lbl})",
 
-                custom_prompt=prompt
+                    model_name=self.arbitrator_model, tier_label="ARBITRO MATEMATICO",
 
-            )
+                    custom_prompt=prompt
 
-            if status == 200:
+                )
 
-                candidates = res_json.get("candidates", [])
+                last_err, last_dur = err, dur
 
-                if candidates:
+                if status == 200:
 
-                    parts = candidates[0].get("content", {}).get("parts", [{}])
+                    candidates = res_json.get("candidates", [])
 
-                    txt = parts[0].get("text", "")
+                    if candidates:
 
-                    parsed_raw = self.parse_json_response(txt)
+                        txt = GeminiVisionExtractor._extract_text_from_candidates(candidates)
 
-                    if parsed_raw.righe_scatole:
+                        finish_reason = GeminiVisionExtractor._extract_finish_reason(candidates)
 
-                        parsed_raw.tempo_elaborazione_sec = round(dur, 1)
+                        parsed_raw = self.parse_json_response(txt, finish_reason=finish_reason)
 
-                        parsed_raw.costo_usd = 0.0
+                        if self._is_valid_raw_extraction(parsed_raw) and parsed_raw.righe_scatole:
 
-                        arb_name = self.arbitrator_model.split("/")[-1].replace(":free", "").replace("-", " ").title()
+                            parsed_raw.tempo_elaborazione_sec = round(dur, 1)
 
-                        parsed_raw.note_o_anomalie = (parsed_raw.note_o_anomalie or "") + f" [Arbitrato con successo da {arb_name} in {dur:.1f}s | Gratis]"
+                            parsed_raw.costo_usd = 0.0
 
-                        self.session_logger.log_arbitration_result(
+                            arb_name = self.arbitrator_model.split("/")[-1].replace(":free", "").replace("-", " ").title()
 
-                            self.arbitrator_model, success=True, duration_sec=dur, details="Discrepanze risolte matematicamente da Gemini"
+                            parsed_raw.note_o_anomalie = (parsed_raw.note_o_anomalie or "") + f" [Arbitrato con successo da {arb_name} in {dur:.1f}s | Gratis]"
 
-                        )
+                            self.session_logger.log_arbitration_result(
 
-                        return parsed_raw
+                                self.arbitrator_model, success=True, duration_sec=dur, details="Discrepanze risolte matematicamente da Gemini"
+
+                            )
+
+                            return parsed_raw
+
+                        else:
+
+                            err_detail = parsed_raw.note_o_anomalie or "nessuna scatola estratta"
+
+                            last_err = f"Parsing arbitro fallito/incompleto: {err_detail}"
 
                     else:
 
-                        err_detail = parsed_raw.note_o_anomalie or "nessuna scatola estratta"
+                        last_err = "Nessun candidato restituito da Arbitro Gemini"
 
-                        self.session_logger.log_arbitration_result(
+            self.session_logger.log_arbitration_result(self.arbitrator_model, success=False, duration_sec=last_dur, details=last_err)
 
-                            self.arbitrator_model, success=False, duration_sec=dur, details=f"Parsing arbitro fallito: {err_detail}"
+            if last_err:
 
-                        )
-
-                        raw.note_o_anomalie = (raw.note_o_anomalie or "") + f" [Arbitro Gemini non valido ({err_detail})]"
-
-                        return raw
-
-            self.session_logger.log_arbitration_result(self.arbitrator_model, success=False, duration_sec=dur, details=err)
+                raw.note_o_anomalie = (raw.note_o_anomalie or "") + f" [Arbitro Gemini non valido ({last_err})]"
 
             return raw
 
@@ -993,13 +1105,17 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
                 if choices:
 
-                    msg = choices[0].get("message", {})
+                    c0 = choices[0] if isinstance(choices[0], dict) else {}
+
+                    msg = c0.get("message", {}) or {}
+
+                    finish_reason = str(c0.get("finish_reason") or "").strip()
 
                     txt = msg.get("content") or msg.get("reasoning") or msg.get("reasoning_content") or ""
 
-                    haiku_raw = self.parse_json_response(txt)
+                    haiku_raw = self.parse_json_response(txt, finish_reason=finish_reason)
 
-                    if haiku_raw.righe_scatole:
+                    if self._is_valid_raw_extraction(haiku_raw) and haiku_raw.righe_scatole:
 
                         cost = float(res_json.get("usage", {}).get("cost") or 0.0)
 
@@ -1082,11 +1198,15 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
         try:
 
-            msg = res_json.get("choices", [{}])[0].get("message", {})
+            c0 = (res_json.get("choices") or [{}])[0]
+
+            msg = c0.get("message", {}) or {}
+
+            finish_reason = str(c0.get("finish_reason") or "").strip()
 
             txt = msg.get("content") or msg.get("reasoning") or msg.get("reasoning_content") or ""
 
-            raw = self.parse_json_response(txt)
+            raw = self.parse_json_response(txt, finish_reason=finish_reason)
 
         except Exception as e:
 
@@ -1102,7 +1222,7 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
         try:
 
-            discrepancies = self._validate_math(raw)
+            discrepancies = self._validate_math(raw, allow_arbitration=False)
 
             if discrepancies:
 
@@ -1119,27 +1239,8 @@ class CascadeVisionExtractor(BaseVisionExtractor):
         return raw
     @staticmethod
     def _is_valid_raw_extraction(raw: Optional[RawCardExtraction]) -> bool:
-        """Verifica se l'estrazione ottenuta dal tier e' valida o se contiene un errore fatale di parsing JSON."""
-        if raw is None:
-            return False
-        # Se ha estratto righe di scatole, l'estrazione ha avuto successo
-        if raw.righe_scatole and len(raw.righe_scatole) > 0:
-            return True
-        # Se non ci sono scatole, verifichiamo che non sia dovuto a un errore di parsing, sintassi o risposta vuota
-        err_note = (raw.note_o_anomalie or "").lower()
-        fatal_terms = (
-            "impossibile interpretare json",
-            "nessun oggetto json",
-            "risposta vuota",
-            "formato inatteso",
-            "expecting",
-            "jsondecodeerror",
-            "delimiter",
-        )
-        if any(term in err_note for term in fatal_terms):
-            return False
-        # Se non c'e' errore di sintassi, la scheda e' lecitamente vuota
-        return True
+        """Verifica se l'estrazione ottenuta dal tier e' valida, completa e priva di errori fatali o troncamenti."""
+        return BaseVisionExtractor.is_valid_raw_extraction(raw)
 
 
 
@@ -1151,623 +1252,375 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
     # -------------------------------------------------------------------------
 
-    def extract_from_image(self, image_path: str, _is_retry_after_rotation: bool = False, status_callback: Optional[Callable[[str], None]] = None) -> RawCardExtraction:
+    def _build_cascade_plan(self) -> List[Dict[str, Any]]:
+        """Costruisce la sequenza ordinata dei modelli in base alle 3 sezioni configurate."""
+        gemini_35 = {
+            "kind": "gemini",
+            "model": self.gemini_model,
+            "short_name": "Gemini 3.5 Lite",
+            "display": "Google Gemini 3.5 Flash-Lite",
+            "tier_suffix": "Google Gemini",
+            "is_free": True,
+        }
+        gemini_38 = {
+            "kind": "gemini",
+            "model": self.gemini_38_model,
+            "short_name": "Gemini 3.8 Flash",
+            "display": "Google Gemini 3.8 Flash",
+            "tier_suffix": "Gemini 3.8 Flash",
+            "is_free": True,
+        }
+        haiku_step = {
+            "kind": "openrouter",
+            "model": self.haiku_model,
+            "short_name": "Claude Haiku 5.5 (Low)",
+            "display": "Claude Haiku 5.5",
+            "tracker_prov": "openrouter_haiku",
+            "is_free": False,
+        }
+        luna_step = {
+            "kind": "openrouter",
+            "model": self.luna_model,
+            "short_name": "GPT-6 Luna (Low)",
+            "display": "GPT-6 Luna",
+            "tracker_prov": "openrouter",
+            "is_free": False,
+        }
+        nemotron_step = {
+            "kind": "openrouter",
+            "model": self.free_model,
+            "short_name": "Nemotron Free",
+            "display": "Nemotron Free",
+            "tracker_prov": "openrouter_free",
+            "is_free": True,
+        }
 
+        plan: List[Dict[str, Any]] = []
+
+        # Sezione 1: Modello Principale Free (Google Diretto)
+        if self.free_primary_mode == "gemini_38":
+            plan.append(gemini_38)
+        elif self.free_primary_mode == "gemini_38_then_35":
+            plan.extend([gemini_38, gemini_35])
+        elif self.free_primary_mode == "gemini_35_then_38":
+            plan.extend([gemini_35, gemini_38])
+        elif self.free_primary_mode == "none":
+            pass
+        else:
+            plan.append(gemini_35)
+
+        # Sezione 2: Modelli a Pagamento (OpenRouter)
+        if self.paid_mode == "haiku":
+            plan.append(haiku_step)
+        elif self.paid_mode == "luna":
+            plan.append(luna_step)
+        elif self.paid_mode == "haiku_then_luna":
+            plan.extend([haiku_step, luna_step])
+        elif self.paid_mode == "luna_then_haiku":
+            plan.extend([luna_step, haiku_step])
+        elif self.paid_mode in ("none", "disattivato", ""):
+            pass
+        else:
+            plan.append(haiku_step)
+
+        # Sezione 3: Fallback Gratuito (OpenRouter)
+        if self.fallback_mode == "nemotron_free":
+            plan.append(nemotron_step)
+        elif self.fallback_mode in ("none", "disattivato", ""):
+            pass
+        else:
+            plan.append(nemotron_step)
+
+        return plan
+
+    def extract_from_image(
+        self,
+        image_path: str,
+        _is_retry_after_rotation: bool = False,
+        status_callback: Optional[Callable[[str], None]] = None,
+    ) -> RawCardExtraction:
         from pathlib import Path
 
         img_name = Path(image_path).name
+        plan = self._build_cascade_plan()
+        plan_summary = " -> ".join(s["short_name"] for s in plan) or "Nessun modello attivo"
 
-        variant_label = "v2 (Gemini 3.8 Primario)" if self.variant == "v2" else "v1 (Standard)"
-
-        self.session_logger.logger.info(f"[CASCADE] === Inizio elaborazione Cascata {variant_label}: '{img_name}' (retry_rotazione={_is_retry_after_rotation}) ===")
+        self.session_logger.logger.info(
+            f"[CASCADE] === Inizio elaborazione Cascata ({plan_summary}): '{img_name}' (retry_rotazione={_is_retry_after_rotation}) ==="
+        )
         if status_callback:
-            status_callback(f"📡 Invio immagine a Cascata {variant_label}...")
+            status_callback(f"📡 Invio immagine a Cascata ({plan_summary})...")
 
         try:
-
             mime_type, img_data = self.encode_and_optimize_image(image_path)
-
         except Exception as e:
-
             err_msg = f"Impossibile leggere/ottimizzare immagine: {e}"
-
             self.session_logger.logger.error(f"[CASCADE] {err_msg}")
-
             return RawCardExtraction(note_o_anomalie=err_msg)
 
-
-
         tier_used = "Nessuno"
-
         raw_result: Optional[RawCardExtraction] = None
+        winner_is_free = True
+        winner_is_gemini = False
+        winner_model = ""
 
-
-
-        keys_to_try = []
-
+        keys_to_try: List[Tuple[str, str]] = []
         if self.k1 and self.k2:
-
             if self._turn % 2 == 0:
-
                 keys_to_try = [(self.k1, "Google 1"), (self.k2, "Google 2")]
-
             else:
-
                 keys_to_try = [(self.k2, "Google 2"), (self.k1, "Google 1")]
-
             self._turn += 1
-
         elif self.k1:
-
             keys_to_try = [(self.k1, "Google 1")]
-
         elif self.k2:
-
             keys_to_try = [(self.k2, "Google 2")]
 
+        tier_letters = ["A", "B", "C", "D", "E", "F"]
+        prev_tier_name = ""
+        prev_fail_reason = ""
 
+        for idx, step in enumerate(plan):
+            if raw_result is not None:
+                break
 
-        if self.variant == "v2":
+            letter = tier_letters[idx] if idx < len(tier_letters) else f"T{idx + 1}"
+            tier_prefix = f"Piano {letter}"
+            tier_upper = f"PIANO {letter}"
+            step_kind = step["kind"]
+            step_model = step["model"]
+            step_display = step["display"]
+            step_short = step["short_name"]
 
-            # =========================================================
-
-            # CASCATA V2: Gemini 3.8 ➔ Gemini 3.5 ➔ GPT-6 Luna ➔ Haiku
-
-            # =========================================================
-
-
-
-            # 1. PIANO A (v2): Google Gemini 3.8 Flash
-
-            for key, label in keys_to_try:
-
-                prov_name = "gemini_1" if "1" in label else "gemini_2"
-
-                if self.tracker.is_exhausted(prov_name, self.gemini_38_model):
-
+            if step_kind == "gemini":
+                if not keys_to_try:
+                    prev_tier_name = f"{tier_prefix} ({step_display})"
+                    prev_fail_reason = "Chiavi Google non configurate"
                     continue
 
-                status, res_json, err, dur = self._call_gemini(
+                if idx > 0 and prev_tier_name:
+                    self.session_logger.log_ai_fallback(
+                        prev_tier_name,
+                        f"{tier_prefix} ({step_display})",
+                        step_model,
+                        reason=prev_fail_reason or "Livello precedente non disponibile (503/408/quota)",
+                    )
 
-                    key, img_data, mime_type, key_label=label, model_name=self.gemini_38_model, tier_label="PIANO A (v2) - Gemini 3.8 Flash"
-
-                )
-
-                if status == 200:
-
-                    try:
-
-                        cands = res_json.get("candidates", [])
-
-                        txt = GeminiVisionExtractor._extract_text_from_candidates(cands)
-                        parsed = self.parse_json_response(txt)
-                        if not self._is_valid_raw_extraction(parsed):
-                            self.session_logger.logger.warning(
-                                f"[CASCADE v2] Risposta o JSON non valido da Gemini 3.8 ({label}): {parsed.note_o_anomalie}. Fallback in corso..."
-                            )
-                            continue
-                        raw_result = parsed
-                        raw_result.tempo_elaborazione_sec = round(dur, 1)
-                        raw_result.costo_usd = 0.0
-                        tier_used = f"Piano A: {label} (Gemini 3.8 Flash | {dur:.1f}s | Gratis)"
-                        tokens = res_json.get("usageMetadata", {}).get("totalTokenCount", 0)
-                        self.tracker.record_call(prov_name, self.gemini_38_model, 200, tokens, dur, is_fallback=False)
-                        break
-
-                    except Exception as ex:
-
-                        self.session_logger.logger.error(f"[CASCADE v2] Errore parsing Gemini 3.8: {ex}")
-
-                if status == 429:
-
-                    self.tracker.record_call(prov_name, self.gemini_38_model, 429, 0, dur, is_fallback=False)
-
-
-
-            # 2. PIANO B (v2): Google Gemini 3.5 Flash-Lite
-
-            if raw_result is None:
-
-                self.session_logger.log_ai_fallback(
-
-                    "Piano A (Gemini 3.8 Flash)", "Piano B (Gemini 3.5 Flash-Lite)",
-
-                    self.gemini_model, reason="Gemini 3.8 non disponibile (503/408/quota)"
-
-                )
-
-                for key, label in keys_to_try:
-
+                for key_idx, (key, label) in enumerate(keys_to_try):
                     prov_name = "gemini_1" if "1" in label else "gemini_2"
-
-                    if self.tracker.is_exhausted(prov_name, self.gemini_model):
-
+                    if self.tracker.is_exhausted(prov_name, step_model):
+                        prev_fail_reason = f"Quota giornaliera esaurita su {label}"
                         continue
 
+                    if status_callback:
+                        status_callback(f"⏳ Analisi IA con Google {label} ({step_model})...")
+
                     status, res_json, err, dur = self._call_gemini(
-
-                        key, img_data, mime_type, key_label=label, model_name=self.gemini_model, tier_label="PIANO B (v2) - Gemini 3.5 Flash-Lite"
-
+                        key,
+                        img_data,
+                        mime_type,
+                        key_label=label,
+                        model_name=step_model,
+                        tier_label=f"{tier_upper} - {step['tier_suffix']}",
                     )
 
                     if status == 200:
-
                         try:
-
                             cands = res_json.get("candidates", [])
-
                             txt = GeminiVisionExtractor._extract_text_from_candidates(cands)
-                            parsed = self.parse_json_response(txt)
+                            finish_reason = GeminiVisionExtractor._extract_finish_reason(cands)
+                            parsed = self.parse_json_response(txt, finish_reason=finish_reason)
                             if not self._is_valid_raw_extraction(parsed):
                                 self.session_logger.logger.warning(
-                                    f"[CASCADE v2] Risposta o JSON non valido da Gemini 3.5 ({label}): {parsed.note_o_anomalie}. Fallback in corso..."
+                                    f"[CASCADE] Risposta o JSON non valido/incompleto da {step_short} ({label}): {parsed.note_o_anomalie}. Fallback in corso..."
                                 )
+                                prev_fail_reason = parsed.note_o_anomalie or "Risposta o JSON non valido/incompleto"
                                 continue
                             raw_result = parsed
                             raw_result.tempo_elaborazione_sec = round(dur, 1)
                             raw_result.costo_usd = 0.0
-                            tier_used = f"Piano B: {label} (Gemini 3.5 Lite | {dur:.1f}s | Gratis)"
+                            tier_used = f"{tier_prefix}: {label} ({step_short} | {dur:.1f}s | Gratis)"
+                            winner_is_free = True
+                            winner_is_gemini = True
+                            winner_model = step_model
                             tokens = res_json.get("usageMetadata", {}).get("totalTokenCount", 0)
-                            self.tracker.record_call(prov_name, self.gemini_model, 200, tokens, dur, is_fallback=True)
+                            self.tracker.record_call(prov_name, step_model, 200, tokens, dur, is_fallback=(idx > 0 or key_idx > 0))
                             break
-
                         except Exception as ex:
-
-                            self.session_logger.logger.error(f"[CASCADE v2] Errore parsing Gemini 3.5: {ex}")
-
-                    if status == 429:
-
-                        self.tracker.record_call(prov_name, self.gemini_model, 429, 0, dur, is_fallback=True)
-
-
-
-            # 3. PIANO C (v2): OpenRouter GPT-6 Luna (Low Reasoning)
-
-            if raw_result is None and self.or_key:
-
-                self.session_logger.log_ai_fallback(
-
-                    "Piano B (Gemini 3.5 Flash-Lite)", "Piano C (GPT-6 Luna)",
-
-                    self.buffer_model, reason="Server o quote Google non disponibili"
-
-                )
-
-                status, res_json, err, dur = self._call_openrouter(
-
-                    self.buffer_model, img_data, mime_type, tier_label="PIANO C (v2) - GPT-6 Luna"
-
-                )
-
-                if status == 200:
-
-                    try:
-
-                        msg = res_json.get("choices", [{}])[0].get("message", {})
-
-                        txt = msg.get("content") or msg.get("reasoning") or msg.get("reasoning_content") or ""
-                        parsed = self.parse_json_response(txt)
-                        if self._is_valid_raw_extraction(parsed):
-                            raw_result = parsed
-                            cost = float(res_json.get("usage", {}).get("cost") or 0.0)
-                            raw_result.tempo_elaborazione_sec = round(dur, 1)
-                            raw_result.costo_usd = cost
-                            cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
-                            tier_used = f"Piano C: GPT-6 Luna (Low) | {dur:.1f}s | {cost_str}"
-                            tokens = res_json.get("usage", {}).get("total_tokens", 0)
-                            self.tracker.record_call("openrouter", self.buffer_model, 200, tokens, dur, is_fallback=True)
-                        else:
-                            self.session_logger.logger.warning(
-                                f"[CASCADE v2] Risposta o JSON non valido da GPT-6 Luna: {parsed.note_o_anomalie}. Fallback a Haiku..."
-                            )
-
-                    except Exception as ex:
-
-                        self.session_logger.logger.error(f"[CASCADE v2] Errore parsing GPT-6 Luna: {ex}")
-
-
-
-            # 4. PIANO D (v2): OpenRouter Claude Haiku 5.5 (Low Reasoning)
-
-            if raw_result is None and self.or_key:
-
-                self.session_logger.log_ai_fallback(
-
-                    "Piano C (GPT-6 Luna)", "Piano D (Claude Haiku 5.5)",
-
-                    self.haiku_model, reason="Piano C non riuscito o timeout"
-
-                )
-
-                status, res_json, err, dur = self._call_openrouter(
-
-                    self.haiku_model, img_data, mime_type, tier_label="PIANO D (v2) - Claude Haiku 5.5"
-
-                )
-
-                if status == 200:
-
-                    try:
-
-                        msg = res_json.get("choices", [{}])[0].get("message", {})
-
-                        txt = msg.get("content") or msg.get("reasoning") or msg.get("reasoning_content") or ""
-                        parsed = self.parse_json_response(txt)
-                        if self._is_valid_raw_extraction(parsed):
-                            raw_result = parsed
-                            cost = float(res_json.get("usage", {}).get("cost") or 0.0)
-                            raw_result.tempo_elaborazione_sec = round(dur, 1)
-                            raw_result.costo_usd = cost
-                            cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
-                            tier_used = f"Piano D: Claude Haiku 5.5 (Low) | {dur:.1f}s | {cost_str}"
-                            tokens = res_json.get("usage", {}).get("total_tokens", 0)
-                            self.tracker.record_call("openrouter_haiku", self.haiku_model, 200, tokens, dur, is_fallback=True)
-                        else:
-                            self.session_logger.logger.warning(
-                                f"[CASCADE v2] Risposta o JSON non valido da Claude Haiku 5.5: {parsed.note_o_anomalie}. Fallback a Nemotron..."
-                            )
-
-                    except Exception as ex:
-
-                        self.session_logger.logger.error(f"[CASCADE v2] Errore parsing Claude Haiku: {ex}")
-
-
-
-            # 5. PIANO E (v2): OpenRouter Nemotron 3.5 Super-VL (100% Gratis di emergenza)
-
-            if raw_result is None and self.or_key:
-
-                self.session_logger.log_ai_fallback(
-
-                    "Piano D (Claude Haiku 5.5)", "Piano E (Nemotron Free)",
-
-                    self.free_model, reason="Piano D non riuscito o crediti OpenRouter esauriti"
-
-                )
-
-                status, res_json, err, dur = self._call_openrouter(
-
-                    self.free_model, img_data, mime_type, tier_label="PIANO E (v2) - Nemotron Free"
-
-                )
-
-                if status == 200:
-
-                    try:
-
-                        msg = res_json.get("choices", [{}])[0].get("message", {})
-
-                        txt = msg.get("content") or msg.get("reasoning") or msg.get("reasoning_content") or ""
-                        parsed = self.parse_json_response(txt)
-                        if self._is_valid_raw_extraction(parsed):
-                            raw_result = parsed
-                            raw_result.tempo_elaborazione_sec = round(dur, 1)
-                            raw_result.costo_usd = 0.0
-                            tier_used = f"Piano E: Nemotron Free | {dur:.1f}s | Gratis"
-                            tokens = res_json.get("usage", {}).get("total_tokens", 0)
-                            self.tracker.record_call("openrouter_free", self.free_model, 200, tokens, dur, is_fallback=True)
-                        else:
-                            self.session_logger.logger.warning(
-                                f"[CASCADE v2] Risposta o JSON non valido da Nemotron Free: {parsed.note_o_anomalie}"
-                            )
-
-                    except Exception as ex:
-
-                        self.session_logger.logger.error(f"[CASCADE v2] Errore parsing Nemotron Free: {ex}")
-
-
-
-        else:
-
-            # =========================================================
-
-            # CASCATA V1 (Standard): Gemini 3.5 ➔ GPT-6 Luna ➔ Haiku ➔ Nemotron Free
-
-            # =========================================================
-
-
-
-            # 1. PIANO A: Google Gemini 3.5 Flash-Lite (Round-robin Chiave 1 e Chiave 2)
-
-            for key, label in keys_to_try:
-
-                prov_name = "gemini_1" if "1" in label else "gemini_2"
-
-                if self.tracker.is_exhausted(prov_name, self.gemini_model):
-
+                            self.session_logger.logger.error(f"[CASCADE] Errore parsing {step_short}: {ex}")
+                            prev_fail_reason = f"Errore parsing: {ex}"
+
+                    elif status == 429:
+                        self.tracker.record_call(prov_name, step_model, 429, 0, dur, is_fallback=(idx > 0))
+                        prev_fail_reason = f"HTTP 429 Quota esaurita su {step_short}"
+                    else:
+                        prev_fail_reason = f"HTTP {status} su {step_short}"
+
+                if raw_result is None:
+                    prev_tier_name = f"{tier_prefix} ({step_display})"
+
+            elif step_kind == "openrouter":
+                if not self.or_key:
+                    prev_tier_name = f"{tier_prefix} ({step_display})"
+                    prev_fail_reason = "Chiave OpenRouter non configurata"
                     continue
 
-                if status_callback:
-                    status_callback(f"⏳ Analisi IA con Google {label} ({self.gemini_model})...")
-
-                status, res_json, err, dur = self._call_gemini(
-
-                    key, img_data, mime_type, key_label=label, model_name=self.gemini_model, tier_label="PIANO A - Google Gemini"
-
-                )
-
-                if status == 200:
-
-                    try:
-
-                        cands = res_json.get("candidates", [])
-
-                        txt = GeminiVisionExtractor._extract_text_from_candidates(cands)
-                        parsed = self.parse_json_response(txt)
-                        if not self._is_valid_raw_extraction(parsed):
-                            self.session_logger.logger.warning(
-                                f"[CASCADE] Risposta o JSON non valido da Gemini 3.5 ({label}): {parsed.note_o_anomalie}. Fallback in corso..."
-                            )
-                            continue
-                        raw_result = parsed
-                        raw_result.tempo_elaborazione_sec = round(dur, 1)
-                        raw_result.costo_usd = 0.0
-                        tier_used = f"Piano A: {label} (Gemini 3.5 Lite | {dur:.1f}s | Gratis)"
-                        tokens = res_json.get("usageMetadata", {}).get("totalTokenCount", 0)
-                        self.tracker.record_call(prov_name, self.gemini_model, 200, tokens, dur, is_fallback=False)
-                        break
-
-                    except Exception as ex:
-
-                        self.session_logger.logger.error(f"[CASCADE] Errore parsing Gemini 3.5: {ex}")
-
-                if status == 429:
-
-                    self.tracker.record_call(prov_name, self.gemini_model, 429, 0, dur, is_fallback=False)
-
-
-
-            # 2. PIANO B: OpenRouter GPT-6 Luna (Low Reasoning)
-
-            if raw_result is None and self.or_key:
-                if status_callback:
-                    status_callback("🔄 Passaggio automatico a Piano B: GPT-6 Luna...")
-
-                self.session_logger.log_ai_fallback(
-
-                    "Piano A (Google Gemini)", "Piano B (GPT-6 Luna)",
-
-                    self.buffer_model, reason="Quote o server Google non disponibili (503/408/429)"
-
-                )
+                if idx > 0:
+                    if status_callback:
+                        status_callback(f"🔄 Passaggio automatico a {tier_prefix}: {step_display}...")
+                    if prev_tier_name:
+                        self.session_logger.log_ai_fallback(
+                            prev_tier_name,
+                            f"{tier_prefix} ({step_display})",
+                            step_model,
+                            reason=prev_fail_reason or "Livello precedente non disponibile",
+                        )
+                else:
+                    if status_callback:
+                        status_callback(f"⏳ Analisi IA con {step_display}...")
 
                 status, res_json, err, dur = self._call_openrouter(
-
-                    self.buffer_model, img_data, mime_type, tier_label="PIANO B - GPT-6 Luna"
-
+                    step_model,
+                    img_data,
+                    mime_type,
+                    tier_label=f"{tier_upper} - {step_display}",
                 )
 
                 if status == 200:
-
                     try:
-
-                        msg = res_json.get("choices", [{}])[0].get("message", {})
-
+                        c0 = (res_json.get("choices") or [{}])[0]
+                        msg = c0.get("message", {}) or {}
+                        finish_reason = str(c0.get("finish_reason") or "").strip()
                         txt = msg.get("content") or msg.get("reasoning") or msg.get("reasoning_content") or ""
-                        parsed = self.parse_json_response(txt)
+                        parsed = self.parse_json_response(txt, finish_reason=finish_reason)
                         if self._is_valid_raw_extraction(parsed):
                             raw_result = parsed
-                            cost = float(res_json.get("usage", {}).get("cost") or 0.0)
+                            if step["is_free"]:
+                                cost = 0.0
+                                cost_str = "Gratis"
+                            else:
+                                cost = float(res_json.get("usage", {}).get("cost") or 0.0)
+                                cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
                             raw_result.tempo_elaborazione_sec = round(dur, 1)
                             raw_result.costo_usd = cost
-                            cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
-                            tier_used = f"Piano B: GPT-6 Luna (Low) | {dur:.1f}s | {cost_str}"
+                            tier_used = f"{tier_prefix}: {step_short} | {dur:.1f}s | {cost_str}"
+                            winner_is_free = bool(step["is_free"])
+                            winner_is_gemini = False
+                            winner_model = step_model
                             tokens = res_json.get("usage", {}).get("total_tokens", 0)
-                            self.tracker.record_call("openrouter", self.buffer_model, 200, tokens, dur, is_fallback=True)
+                            self.tracker.record_call(step["tracker_prov"], step_model, 200, tokens, dur, is_fallback=(idx > 0))
                         else:
                             self.session_logger.logger.warning(
-                                f"[CASCADE] Risposta o JSON non valido da GPT-6 Luna: {parsed.note_o_anomalie}. Fallback a Haiku..."
+                                f"[CASCADE] Risposta o JSON non valido/incompleto da {step_display}: {parsed.note_o_anomalie}. Fallback in corso..."
                             )
-
+                            prev_fail_reason = parsed.note_o_anomalie or "Risposta o JSON non valido/incompleto"
                     except Exception as ex:
+                        self.session_logger.logger.error(f"[CASCADE] Errore parsing {step_display}: {ex}")
+                        prev_fail_reason = f"Errore parsing: {ex}"
+                else:
+                    prev_fail_reason = f"HTTP {status} su {step_display}"
 
-                        self.session_logger.logger.error(f"[CASCADE] Errore parsing GPT-6 Luna: {ex}")
+                if raw_result is None:
+                    prev_tier_name = f"{tier_prefix} ({step_display})"
 
-
-
-            # 3. PIANO C: OpenRouter Claude Haiku 5.5 (Low Reasoning)
-
-            if raw_result is None and self.or_key:
-                if status_callback:
-                    status_callback("🔄 Passaggio automatico a Piano C: Claude Haiku...")
-
-                self.session_logger.log_ai_fallback(
-
-                    "Piano B (GPT-6 Luna)", "Piano C (Claude Haiku 5.5)",
-
-                    self.haiku_model, reason="Piano B non riuscito o timeout"
-
-                )
-
-                status, res_json, err, dur = self._call_openrouter(
-
-                    self.haiku_model, img_data, mime_type, tier_label="PIANO C - Claude Haiku 5.5"
-
-                )
-
-                if status == 200:
-
-                    try:
-
-                        msg = res_json.get("choices", [{}])[0].get("message", {})
-
-                        txt = msg.get("content") or msg.get("reasoning") or msg.get("reasoning_content") or ""
-                        parsed = self.parse_json_response(txt)
-                        if self._is_valid_raw_extraction(parsed):
-                            raw_result = parsed
-                            cost = float(res_json.get("usage", {}).get("cost") or 0.0)
-                            raw_result.tempo_elaborazione_sec = round(dur, 1)
-                            raw_result.costo_usd = cost
-                            cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
-                            tier_used = f"Piano C: Claude Haiku 5.5 (Low) | {dur:.1f}s | {cost_str}"
-                            tokens = res_json.get("usage", {}).get("total_tokens", 0)
-                            self.tracker.record_call("openrouter_haiku", self.haiku_model, 200, tokens, dur, is_fallback=True)
-                        else:
-                            self.session_logger.logger.warning(
-                                f"[CASCADE] Risposta o JSON non valido da Claude Haiku 5.5: {parsed.note_o_anomalie}. Fallback a Nemotron..."
-                            )
-
-                    except Exception as ex:
-
-                        self.session_logger.logger.error(f"[CASCADE] Errore parsing Claude Haiku: {ex}")
-
-
-
-            # 4. PIANO D: OpenRouter Nemotron 3.5 Super-VL (100% Gratis di emergenza)
-
-            if raw_result is None and self.or_key:
-
-                self.session_logger.log_ai_fallback(
-
-                    "Piano C (Claude Haiku 5.5)", "Piano D (Nemotron Free)",
-
-                    self.free_model, reason="Piano C non riuscito o crediti OpenRouter esauriti"
-
-                )
-
-                status, res_json, err, dur = self._call_openrouter(
-
-                    self.free_model, img_data, mime_type, tier_label="PIANO D - Nemotron Free"
-
-                )
-
-                if status == 200:
-
-                    try:
-
-                        msg = res_json.get("choices", [{}])[0].get("message", {})
-
-                        txt = msg.get("content") or msg.get("reasoning") or msg.get("reasoning_content") or ""
-                        parsed = self.parse_json_response(txt)
-                        if self._is_valid_raw_extraction(parsed):
-                            raw_result = parsed
-                            raw_result.tempo_elaborazione_sec = round(dur, 1)
-                            raw_result.costo_usd = 0.0
-                            tier_used = f"Piano D: Nemotron Free | {dur:.1f}s | Gratis"
-                            tokens = res_json.get("usage", {}).get("total_tokens", 0)
-                            self.tracker.record_call("openrouter_free", self.free_model, 200, tokens, dur, is_fallback=True)
-                        else:
-                            self.session_logger.logger.warning(
-                                f"[CASCADE] Risposta o JSON non valido da Nemotron Free: {parsed.note_o_anomalie}"
-                            )
-
-                    except Exception as ex:
-
-                        self.session_logger.logger.error(f"[CASCADE] Errore parsing Nemotron Free: {ex}")
-
-
+        self.last_winner_model = winner_model
+        self.last_winner_is_free = winner_is_free
 
         # Se nessun livello ha risposto
-
         if raw_result is None:
-
             self.session_logger.logger.error("[CASCADE] Tutti i piani della cascata sono falliti o le chiavi sono mancanti/esaurite.")
-
             return RawCardExtraction(
-
                 note_o_anomalie="Tutti i piani della cascata sono falliti o le chiavi sono mancanti/esaurite."
-
             )
-
-
 
         # Gestione orientamento a 180°
-
         if raw_result.scheda_capovolta and not _is_retry_after_rotation:
-
             self.session_logger.logger.warning(
-
                 f"[CASCADE] Scheda '{img_name}' rilevata capovolta (180°) dall'IA: "
-
                 "applico rotazione fisica di 180° su disco e ri-eseguo l'analisi a orientamento corretto."
-
             )
-
             try:
-
                 from ..scanner.scanner_service import ScannerService
 
                 ScannerService.rotate_image_file_180(image_path)
-
-                retry_result = self.extract_from_image(image_path, _is_retry_after_rotation=True)
-
+                retry_result = self.extract_from_image(
+                    image_path,
+                    _is_retry_after_rotation=True,
+                    status_callback=status_callback,
+                )
                 retry_result.was_rotated_180 = True
-
                 return retry_result
-
             except Exception as e:
-
                 self.session_logger.logger.error(f"[CASCADE] Errore durante rotazione 180° e re-analisi: {e}")
 
-
-
-        # Controllo matematico & Arbitraggio Rapido / Haiku
+        # Controllo matematico & Arbitraggio differenziato (Free vs Pagamento)
         try:
-            discrepancies = self._validate_math(raw_result)
+            should_arbitrate = self.enable_arbitrator_on_free if winner_is_free else self.enable_arbitrator_on_paid
+            discrepancies = self._validate_math(
+                raw_result,
+                allow_arbitration=should_arbitrate,
+                winner_model=winner_model,
+            )
             if discrepancies:
-                is_gemini_source = bool(tier_used and ("Gemini" in tier_used or "Google" in tier_used))
                 gem_key = getattr(self, "gemini_key_1", None) or getattr(self, "gemini_key_2", None) or self.k1 or self.k2
 
-                # 1. Se la scansione iniziale è di Gemini: facciamo un secondo passaggio al volo ultra-rapido
-                # con Gemini SOLO sulle colonne con errori
-                if is_gemini_source and gem_key:
+                if should_arbitrate and winner_is_gemini and gem_key:
                     if status_callback:
                         status_callback(f"⚡ Controllo rapido Gemini su {len(discrepancies)} discrepanze...")
                     raw_result = self._arbitrate_with_gemini_flash(discrepancies, img_data, mime_type, raw_result)
-                    discrepancies = self._validate_math(raw_result)
+                    discrepancies = self._validate_math(
+                        raw_result,
+                        allow_arbitration=should_arbitrate,
+                        winner_model=winner_model,
+                    )
 
-                # 2. Se rimangono discrepanze (oppure se Gemini era fallito ed è stata usata Luna/OpenRouter):
-                # passiamo DIRETTAMENTE all'Arbitro configurato (es. Haiku).
-                # Niente rimbalzi o ulteriori tentativi con Gemini.
                 if discrepancies:
-                    disc_text = "; ".join([f"{d['categoria']} (somma={d['calcolato']} kg, dichiarato={d['dichiarato']} kg)" for d in discrepancies])
-                    is_gemini_arb = bool(self.arbitrator_model and (self.arbitrator_model.startswith("gemini") or "gemini" in self.arbitrator_model.lower()))
+                    disc_text = "; ".join([
+                        f"{d['categoria']} (somma={d['calcolato']} kg, dichiarato={d['dichiarato']} kg)"
+                        for d in discrepancies
+                    ])
+                    is_gemini_arb = bool(
+                        self.arbitrator_model
+                        and (self.arbitrator_model.startswith("gemini") or "gemini" in self.arbitrator_model.lower())
+                    )
                     has_arb_key = bool(gem_key) if is_gemini_arb else bool(self.or_key)
+                    distinct_arb = self._is_distinct_arbitrator(winner_model)
 
-                    if has_arb_key and self.arbitrator_model and self.enable_auto_arbitrator:
+                    if should_arbitrate and has_arb_key and distinct_arb:
                         if status_callback:
                             arb_display = self.arbitrator_model.split("/")[-1].replace(":free", "").replace("-", " ").title()
                             status_callback(f"🦅 Arbitraggio con {arb_display}...")
                         raw_result = self._arbitrate_discrepancies(discrepancies, img_data, mime_type, raw_result)
                     else:
                         raw_result.note_o_anomalie = (raw_result.note_o_anomalie or "") + f" [Discrepanza matematica: {disc_text}]"
-                        self.session_logger.logger.info(
-                            f"[CASCADE] Discrepanza matematica rilevata su {len(discrepancies)} categorie: delegata all'operatore."
-                        )
+                        tier_kind = "Gratuito" if winner_is_free else "a Pagamento"
+                        if should_arbitrate and self.arbitrator_model and not distinct_arb:
+                            self.session_logger.logger.info(
+                                f"[CASCADE] Discrepanza matematica su '{winner_model}': arbitro '{self.arbitrator_model}' "
+                                "coincide gia con il modello vincente (nessun doppio invio); verifica affidata all'operatore."
+                            )
+                        else:
+                            self.session_logger.logger.info(
+                                f"[CASCADE] Discrepanza matematica su modello {tier_kind}: arbitro disattivato per questo livello, delegata all'operatore."
+                            )
         except Exception as e:
             self.session_logger.logger.warning(f"[CASCADE] Avviso validazione matematica cascata: {e}")
 
-
-
         # Aggiunta badge vincitore
-
         note_prefix = f"[{tier_used}]"
-
         if note_prefix not in (raw_result.note_o_anomalie or ""):
-
             raw_result.note_o_anomalie = f"{note_prefix} {raw_result.note_o_anomalie or ''}".strip()
 
-
-
         tot_kg = sum(b.kg for b in raw_result.righe_scatole)
-
         self.session_logger.log_extraction_complete(
-
             tier_winner=tier_used,
-
             supermarket=raw_result.supermercato,
-
             scheda_num=raw_result.numero_scheda,
-
             box_count=len(raw_result.righe_scatole),
-
             total_kg=tot_kg,
-
             upside_down=raw_result.scheda_capovolta,
-
             notes=raw_result.note_o_anomalie,
-
         )
-
         return raw_result
+
 

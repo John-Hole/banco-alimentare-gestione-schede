@@ -139,6 +139,7 @@ class TestCascadeExtractor(unittest.TestCase):
             gemini_api_key_1="KEY1",
             openrouter_api_key="OR_KEY",
             quota_tracker=mock_tracker,
+            paid_mode="ember_then_haiku",
             variant="v1"
         )
 
@@ -158,11 +159,11 @@ class TestCascadeExtractor(unittest.TestCase):
                 with patch.object(extractor, "_call_openrouter", return_value=(200, luna_payload, "", 1.2)):
                     raw = extractor.extract_from_image("scheda_test.jpg")
                     self.assertEqual(raw.supermercato, "LUNA SHOP")
-                    self.assertIn("Piano B: GPT-6 Luna", raw.note_o_anomalie)
+                    self.assertIn("Piano B: Muse Ember (Minimal)", raw.note_o_anomalie)
                     self.assertEqual(raw.costo_usd, 0.0016)
 
-    def test_cascade_v2_gemini_38_to_35_fallback(self):
-        """Verifica che in Cascata v2 si tenti prima Gemini 3.8, poi Gemini 3.5 se il primo fallisce."""
+    def test_cascade_v2_normalizes_to_gemini_35_without_gemini_38(self):
+        """Verifica che la richiesta di Cascata v2 o modalità con Gemini 3.8 venga normalizzata a Gemini 3.5 Lite senza 3.8."""
         mock_tracker = MagicMock()
         mock_tracker.is_exhausted.return_value = False
 
@@ -172,36 +173,10 @@ class TestCascadeExtractor(unittest.TestCase):
             quota_tracker=mock_tracker,
             variant="v2"
         )
-
-        gemini_35_payload = {
-            "candidates": [
-                {
-                    "content": {
-                        "parts": [
-                            {
-                                "text": '{"supermercato": "FALLBACK 3.5", "numero_scheda": "A2", "colonne": [{"colonna_idx": 1, "categoria": "Tonno", "scatole": [{"riga": "1a", "kg": 5.0}]}]}'
-                            }
-                        ]
-                    }
-                }
-            ],
-            "usageMetadata": {"totalTokenCount": 200}
-        }
-
-        call_records = []
-        def mock_gemini_call(key, img_data, mime, key_label="Google", model_name=None, tier_label=""):
-            call_records.append(model_name)
-            if model_name == "gemini-3.8-flash":
-                return (503, {}, "Service Unavailable", 1.0)
-            return (200, gemini_35_payload, "", 0.8)
-
-        with patch.object(extractor, "encode_and_optimize_image", return_value=("image/jpeg", "fake_b64")):
-            with patch.object(extractor, "_call_gemini", side_effect=mock_gemini_call):
-                raw = extractor.extract_from_image("scheda_test.jpg")
-                self.assertEqual(raw.supermercato, "FALLBACK 3.5")
-                self.assertIn("Piano B: Google 1 (Gemini 3.5 Lite", raw.note_o_anomalie)
-                self.assertIn("gemini-3.8-flash", call_records)
-                self.assertIn("gemini-3.5-flash-lite", call_records)
+        plan = extractor._build_cascade_plan()
+        models_in_plan = [s["model"] for s in plan]
+        self.assertNotIn("gemini-3.8-flash", models_in_plan)
+        self.assertIn("gemini-3.5-flash-lite", models_in_plan)
 
     def test_arbitrator_uses_haiku_on_discrepancy(self):
         """Verifica che l'arbitraggio matematico invochi Claude Haiku 5.5 e non Sonnet."""
@@ -252,6 +227,7 @@ class TestCascadeExtractor(unittest.TestCase):
             gemini_api_key_1="KEY1",
             openrouter_api_key="OR_KEY",
             quota_tracker=mock_tracker,
+            paid_mode="ember_then_haiku",
             variant="v1"
         )
 
@@ -269,7 +245,7 @@ class TestCascadeExtractor(unittest.TestCase):
         call_models = []
         def mock_or_call(model, img, mime, tier_label="", custom_prompt=None):
             call_models.append(model)
-            if "luna" in model:
+            if "ember" in model or "luna" in model:
                 return (429, {}, "Rate limited", 0.5)
             if "haiku" in model:
                 return (402, {}, "Credits exhausted", 0.5)
@@ -282,7 +258,7 @@ class TestCascadeExtractor(unittest.TestCase):
                 with patch.object(extractor, "_call_openrouter", side_effect=mock_or_call):
                     raw = extractor.extract_from_image("scheda_test.jpg")
                     self.assertEqual(raw.supermercato, "EMERGENCY FREE SHOP")
-                    self.assertIn("Piano D: Nemotron Free", raw.note_o_anomalie)
+                    self.assertIn("Nemotron Free", raw.note_o_anomalie)
                     self.assertEqual(raw.costo_usd, 0.0)
                     self.assertEqual(len(call_models), 3)
 
@@ -312,7 +288,7 @@ class TestCascadeExtractor(unittest.TestCase):
         call_models = []
         def mock_or_call(model, img, mime, tier_label="", custom_prompt=None):
             call_models.append(model)
-            if "luna" in model:
+            if "ember" in model or "luna" in model:
                 return (429, {}, "Rate limited", 0.5)
             if "haiku" in model:
                 return (402, {}, "Credits exhausted", 0.5)
@@ -325,7 +301,7 @@ class TestCascadeExtractor(unittest.TestCase):
                 with patch.object(extractor, "_call_openrouter", side_effect=mock_or_call):
                     raw = extractor.extract_from_image("scheda_test.jpg")
                     self.assertEqual(raw.supermercato, "V2 EMERGENCY FREE")
-                    self.assertIn("Piano E: Nemotron Free", raw.note_o_anomalie)
+                    self.assertIn("Nemotron Free", raw.note_o_anomalie)
                     self.assertEqual(raw.costo_usd, 0.0)
 
 
@@ -382,6 +358,7 @@ class TestCascadeExtractor(unittest.TestCase):
             gemini_api_key_1="KEY1",
             openrouter_api_key="OR_KEY",
             quota_tracker=mock_tracker,
+            paid_mode="ember_then_haiku",
             variant="v1"
         )
 
@@ -417,10 +394,10 @@ class TestCascadeExtractor(unittest.TestCase):
                     self.assertEqual(raw.supermercato, "COOP SALVATA DA LUNA")
                     self.assertEqual(len(raw.righe_scatole), 1)
                     self.assertEqual(raw.righe_scatole[0].kg, 15.0)
-                    self.assertIn("Piano B: GPT-6 Luna", raw.note_o_anomalie)
+                    self.assertIn("Piano B: Muse Ember (Minimal)", raw.note_o_anomalie)
 
-    def test_default_customizable_cascade_plan_uses_haiku_without_luna_and_logs_ascii(self):
-        """Verifica il piano default (Gemini 3.5 -> Claude Haiku 5.5 -> Nemotron Free, senza Luna) e logging ASCII sicuro."""
+    def test_default_customizable_cascade_plan_uses_ember_without_luna_and_logs_ascii(self):
+        """Verifica il piano default (Gemini 3.5 -> Muse Ember Minimal -> Nemotron Free, senza Luna) e logging ASCII sicuro."""
         mock_tracker = MagicMock()
         mock_tracker.is_exhausted.return_value = False
 
@@ -433,26 +410,26 @@ class TestCascadeExtractor(unittest.TestCase):
         models = [step["model"] for step in plan]
         self.assertEqual(
             models,
-            ["gemini-3.5-flash-lite", "anthropic/claude-haiku-5.5", "nvidia/nemotron-3.5-super-vl:free"],
+            ["gemini-3.5-flash-lite", "meta/muse-ember", "nvidia/nemotron-3.5-super-vl:free"],
         )
         self.assertNotIn("openai/gpt-6-luna", models)
 
-        # Verifica che la sequenza di failover esegua Haiku subito dopo Google 503 senza toccare Luna
+        # Verifica che la sequenza di failover esegua Ember Minimal subito dopo Google 503 senza toccare Luna
         called_models = []
-        haiku_payload = {
+        ember_payload = {
             "choices": [
                 {
                     "message": {
-                        "content": '{"supermercato": "HAIKU DEFAULT SHOP", "numero_scheda": "1", "colonne": [{"colonna_idx": 7, "categoria": "Pasta", "scatole": [{"riga": "1a", "kg": 10.0}], "totale_dichiarato_kg": 10.0}]}'
+                        "content": '{"supermercato": "EMBER DEFAULT SHOP", "numero_scheda": "1", "colonne": [{"colonna_idx": 7, "categoria": "Pasta", "scatole": [{"riga": "1a", "kg": 10.0}], "totale_dichiarato_kg": 10.0}]}'
                     }
                 }
             ],
-            "usage": {"total_tokens": 110, "cost": 0.0025},
+            "usage": {"total_tokens": 110, "cost": 0.0010},
         }
 
         def mock_or(model, img, mime, tier_label="", custom_prompt=None):
             called_models.append(model)
-            return (200, haiku_payload, "", 0.7)
+            return (200, ember_payload, "", 0.7)
 
         import io
         import logging
@@ -467,49 +444,49 @@ class TestCascadeExtractor(unittest.TestCase):
         finally:
             extractor.session_logger.logger.removeHandler(cp_handler)
 
-        self.assertEqual(raw.supermercato, "HAIKU DEFAULT SHOP")
-        self.assertEqual(called_models, ["anthropic/claude-haiku-5.5"])
-        self.assertIn("Piano B: Claude Haiku 5.5", raw.note_o_anomalie)
+        self.assertEqual(raw.supermercato, "EMBER DEFAULT SHOP")
+        self.assertEqual(called_models, ["meta/muse-ember"])
+        self.assertIn("Piano B: Muse Ember (Minimal)", raw.note_o_anomalie)
         cp1252_stream.flush()
         log_text = extractor.session_logger.read_current_log()
-        self.assertIn("Gemini 3.5 Lite -> Claude Haiku 5.5 (Low) -> Nemotron Free", log_text)
+        self.assertIn("Gemini 3.5 Lite -> Muse Ember (Minimal) -> Nemotron Free", log_text)
 
     def test_customizable_cascade_section_combinations(self):
         """Verifica tutte le opzioni delle 3 sezioni (Gemini 3.8, entrambi, Haiku/Luna/none, Nemotron/none)."""
         mock_tracker = MagicMock()
         mock_tracker.is_exhausted.return_value = False
 
-        # 1. Solo Gemini 3.8 + haiku_then_luna + nemotron_free
+        # 1. free_primary_mode="gemini_38" normalizza a gemini_35 (gemini-3.5-flash-lite)
         ext_38_hl = CascadeVisionExtractor(
             gemini_api_key_1="K1",
             openrouter_api_key="OR",
             free_primary_mode="gemini_38",
-            paid_mode="haiku_then_luna",
+            paid_mode="haiku_then_ember",
             fallback_mode="nemotron_free",
             quota_tracker=mock_tracker,
         )
         self.assertEqual(
             [s["model"] for s in ext_38_hl._build_cascade_plan()],
             [
-                "gemini-3.8-flash",
+                "gemini-3.5-flash-lite",
                 "anthropic/claude-haiku-5.5",
-                "openai/gpt-6-luna",
+                "meta/muse-ember",
                 "nvidia/nemotron-3.5-super-vl:free",
             ],
         )
 
-        # 2. Prima 3.5 poi 3.8 + paid_mode="none" -> Google 503 salta subito a Nemotron Free
+        # 2. free_primary_mode="gemini_35" + paid_mode="none" -> Google 503 salta subito a Nemotron Free
         ext_no_paid = CascadeVisionExtractor(
             gemini_api_key_1="K1",
             openrouter_api_key="OR",
-            free_primary_mode="gemini_35_then_38",
+            free_primary_mode="gemini_35",
             paid_mode="none",
             fallback_mode="nemotron_free",
             quota_tracker=mock_tracker,
         )
         self.assertEqual(
             [s["model"] for s in ext_no_paid._build_cascade_plan()],
-            ["gemini-3.5-flash-lite", "gemini-3.8-flash", "nvidia/nemotron-3.5-super-vl:free"],
+            ["gemini-3.5-flash-lite", "nvidia/nemotron-3.5-super-vl:free"],
         )
 
         gem_calls = []
@@ -529,7 +506,7 @@ class TestCascadeExtractor(unittest.TestCase):
             with patch.object(
                 ext_no_paid,
                 "_call_gemini",
-                side_effect=lambda *a, **kw: (gem_calls.append(kw.get("model_name")), (503, {}, "Busy", 0.2))[1],
+                side_effect=lambda *a, **kw: (gem_calls.append(kw.get("model_name") or ext_no_paid.gemini_model), (503, {}, "Busy", 0.2))[1],
             ):
                 with patch.object(
                     ext_no_paid,
@@ -538,7 +515,7 @@ class TestCascadeExtractor(unittest.TestCase):
                 ):
                     raw = ext_no_paid.extract_from_image("scheda_no_paid.jpg")
 
-        self.assertEqual(gem_calls, ["gemini-3.5-flash-lite", "gemini-3.8-flash"])
+        self.assertEqual(gem_calls, ["gemini-3.5-flash-lite"])
         self.assertEqual(or_calls, ["nvidia/nemotron-3.5-super-vl:free"])
         self.assertEqual(raw.supermercato, "NO PAID SHOP")
 
@@ -636,6 +613,7 @@ class TestCascadeExtractor(unittest.TestCase):
             openrouter_api_key="OR_KEY",
             enable_arbitrator_on_free=False,
             enable_arbitrator_on_paid=True,
+            paid_mode="haiku",
             arbitrator_model="anthropic/claude-haiku-5.5",
             quota_tracker=mock_tracker,
         )
@@ -876,7 +854,7 @@ class TestCascadeExtractor(unittest.TestCase):
         self.assertFalse(raw.is_incomplete)
         self.assertEqual(raw.supermercato, "TIGRE - PERUGIA")
         self.assertEqual(len(raw.righe_scatole), 2)
-        self.assertIn("Piano B: Claude Haiku 5.5", raw.note_o_anomalie)
+        self.assertIn("Piano B: Muse Ember (Minimal)", raw.note_o_anomalie)
 
     def test_openrouter_finish_reason_length_marks_incomplete_and_fails_over(self):
         """Se OpenRouter termina per 'length', il risultato incompleto deve attivare failover a Nemotron Free."""

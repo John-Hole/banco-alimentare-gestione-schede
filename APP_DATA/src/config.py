@@ -131,7 +131,7 @@ DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # Modelli OpenRouter selezionabili dalle Impostazioni
 SUPPORTED_OPENROUTER_MODELS: List[str] = [
-    "openai/gpt-6-luna",
+    "meta/muse-ember",
     "anthropic/claude-haiku-5.5",
     "anthropic/claude-sonnet-5.5",
     "nvidia/nemotron-3.5-super-vl:free",
@@ -141,31 +141,30 @@ DEFAULT_OPENROUTER_MODEL = "anthropic/claude-haiku-5.5"
 # Modelli specifici dell'Architettura a Cascata Personalizzabile Banco Alimentare
 DEFAULT_CASCADE_GEMINI_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_CASCADE_V2_PRIMARY_MODEL = "gemini-3.8-flash"
-DEFAULT_CASCADE_LUNA_MODEL = "openai/gpt-6-luna"
+DEFAULT_CASCADE_EMBER_MODEL = "meta/muse-ember"
+DEFAULT_CASCADE_LUNA_MODEL = DEFAULT_CASCADE_EMBER_MODEL  # Alias retrocompatibilità per codice/test legacy
 DEFAULT_CASCADE_HAIKU_MODEL = "anthropic/claude-haiku-5.5"
-DEFAULT_CASCADE_BUFFER_MODEL = "anthropic/claude-haiku-5.5"
+DEFAULT_CASCADE_BUFFER_MODEL = DEFAULT_CASCADE_EMBER_MODEL
 DEFAULT_CASCADE_FREE_MODEL = "nvidia/nemotron-3.5-super-vl:free"
 DEFAULT_CASCADE_ARBITRATOR_MODEL = "anthropic/claude-haiku-5.5"
 
 # Opzioni delle 3 Sezioni della Cascata Personalizzabile
 CASCADE_FREE_MODES: Dict[str, str] = {
     "gemini_35": "🆓 Solo Gemini 3.5 Flash-Lite (Gratis · 2 Chiavi)",
-    "gemini_38": "✨ Solo Gemini 3.8 Flash (Gratis · 2 Chiavi)",
-    "gemini_38_then_35": "⚡ Gemini 3.8 ➔ Gemini 3.5 (Gratis · 2 Chiavi)",
-    "gemini_35_then_38": "🆓 Gemini 3.5 ➔ Gemini 3.8 (Gratis · 2 Chiavi)",
+    "none": "⚪ Disattivato (Nessun modello Google gratuito)",
 }
 CASCADE_FREE_INV_MAP: Dict[str, str] = {v: k for k, v in CASCADE_FREE_MODES.items()}
 DEFAULT_CASCADE_FREE_PRIMARY_MODE = "gemini_35"
 
 CASCADE_PAID_MODES: Dict[str, str] = {
-    "haiku": "🦅 Claude Haiku 5.5 Low (~$0.0025 — Default)",
-    "luna": "🌙 GPT-6 Luna Low (~$0.0016)",
-    "haiku_then_luna": "🦅➔🌙 Prima Haiku 5.5, poi GPT-6 Luna",
-    "luna_then_haiku": "🌙➔🦅 Prima GPT-6 Luna, poi Haiku 5.5",
+    "ember": "🔥 Meta Muse Ember Minimal (~$0.0010 — Default)",
+    "haiku": "🦅 Claude Haiku 5.5 Low (~$0.0028)",
+    "ember_then_haiku": "🔥➔🦅 Prima Muse Ember Minimal, poi Haiku 5.5",
+    "haiku_then_ember": "🦅➔🔥 Prima Haiku 5.5, poi Muse Ember Minimal",
     "none": "⚪ Disattivato (Nessun modello a pagamento)",
 }
 CASCADE_PAID_INV_MAP: Dict[str, str] = {v: k for k, v in CASCADE_PAID_MODES.items()}
-DEFAULT_CASCADE_PAID_MODE = "haiku"
+DEFAULT_CASCADE_PAID_MODE = "ember"
 
 CASCADE_FALLBACK_MODES: Dict[str, str] = {
     "nemotron_free": "🆓 Nemotron 3.5 Super-VL Free ($0.00 — Default)",
@@ -177,19 +176,19 @@ DEFAULT_CASCADE_FALLBACK_MODE = "nemotron_free"
 # Modelli selezionabili per l'Arbitro Matematico (controllo discrepanze quadrature)
 SUPPORTED_ARBITRATOR_MODELS: List[str] = [
     "anthropic/claude-haiku-5.5",
-    "openai/gpt-6-luna",
+    "meta/muse-ember:minimal",
+    "meta/muse-ember:low",
     "anthropic/claude-sonnet-5.5",
     "gemini-3.5-flash-lite",
-    "gemini-3.8-flash",
     "nvidia/nemotron-3.5-super-vl:free",
 ]
 
 ARBITRATOR_DISPLAY_MAP: Dict[str, str] = {
-    "anthropic/claude-haiku-5.5": "🦅 Claude Haiku 5.5 (Low Reasoning) (~$0.0025 — Consigliato)",
-    "openai/gpt-6-luna": "🌙 GPT-6 Luna (Low Reasoning) (~$0.0016)",
+    "anthropic/claude-haiku-5.5": "🦅 Claude Haiku 5.5 (Low Reasoning) (~$0.0028 — Consigliato)",
+    "meta/muse-ember:minimal": "🔥 Meta Muse Ember (Minimal Reasoning) (~$0.0010)",
+    "meta/muse-ember:low": "🔥 Meta Muse Ember (Low Reasoning) (~$0.0014)",
     "anthropic/claude-sonnet-5.5": "🧠 Claude Sonnet 5.5 (~$0.0350 — Massima Precisione)",
     "gemini-3.5-flash-lite": "🆓 Gemini 3.5 Flash-Lite (Google Diretto — Gratis)",
-    "gemini-3.8-flash": "✨ Gemini 3.8 Flash (Google Diretto — Gratis)",
     "nvidia/nemotron-3.5-super-vl:free": "🆓 Nemotron 3.5 Super-VL (OpenRouter Free — Gratis)",
 }
 ARBITRATOR_INV_MAP: Dict[str, str] = {v: k for k, v in ARBITRATOR_DISPLAY_MAP.items()}
@@ -197,10 +196,10 @@ ARBITRATOR_INV_MAP: Dict[str, str] = {v: k for k, v in ARBITRATOR_DISPLAY_MAP.it
 # Provider selezionabili (Menu a tendina ordinato)
 SUPPORTED_PROVIDERS: List[str] = [
     "cascade",
-    "cascade_v2",
     "gemini_35",
     "gemini_38",
-    "or_luna_low",
+    "or_muse_minimal",
+    "or_muse_low",
     "or_haiku_low",
     "or_sonnet",
     "or_nemotron",
@@ -326,6 +325,31 @@ def load_app_config() -> Dict[str, Any]:
                         data[path_key] = fallback_val
                 if "enable_arbitrator_on_free" not in data and "enable_auto_arbitrator" in data:
                     data["enable_arbitrator_on_free"] = bool(data["enable_auto_arbitrator"])
+
+                # Normalizzazione retrocompatibile per migrazione da GPT-6 Luna a Meta Muse Ember
+                if data.get("active_provider") == "or_luna_low":
+                    data["active_provider"] = "or_muse_minimal"
+                elif data.get("active_provider") in ("or_muse_medium", "or_muse_max"):
+                    data["active_provider"] = "or_muse_low"
+                elif data.get("active_provider") == "cascade_v2":
+                    data["active_provider"] = "cascade"
+
+                paid_m = str(data.get("cascade_paid_mode") or "").strip().lower()
+                if paid_m == "luna":
+                    data["cascade_paid_mode"] = "ember"
+                elif paid_m == "luna_then_haiku":
+                    data["cascade_paid_mode"] = "ember_then_haiku"
+                elif paid_m == "haiku_then_luna":
+                    data["cascade_paid_mode"] = "haiku_then_ember"
+
+                if data.get("cascade_free_primary_mode") in ("gemini_38", "gemini_38_then_35", "gemini_35_then_38"):
+                    data["cascade_free_primary_mode"] = "gemini_35"
+
+                if data.get("cascade_arbitrator_model") in ("openai/gpt-6-luna", "gemini-3.8-flash"):
+                    data["cascade_arbitrator_model"] = "meta/muse-ember:minimal" if data.get("cascade_arbitrator_model") == "openai/gpt-6-luna" else "gemini-3.5-flash-lite"
+                if data.get("openrouter_arbitrator_model") in ("openai/gpt-6-luna", "gemini-3.8-flash"):
+                    data["openrouter_arbitrator_model"] = "meta/muse-ember:minimal" if data.get("openrouter_arbitrator_model") == "openai/gpt-6-luna" else "gemini-3.5-flash-lite"
+
                 defaults.update(data)
         except Exception:
             pass

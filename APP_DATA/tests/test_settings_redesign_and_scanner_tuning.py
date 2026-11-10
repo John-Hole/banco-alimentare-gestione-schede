@@ -970,7 +970,7 @@ class TestCascadeVisualMapAndDialogUI(unittest.TestCase):
 
 
 
-        self.assertIn("Cascata v1", cmap.capacity_lbl.cget("text"))
+        self.assertIn("Cascata Personalizzabile", cmap.capacity_lbl.cget("text"))
 
 
 
@@ -978,15 +978,9 @@ class TestCascadeVisualMapAndDialogUI(unittest.TestCase):
 
 
 
-        # Test Cascade v2
-
-
-
-        cmap.update_mode("cascade_v2")
-
-
-
-        self.assertIn("Cascata v2", cmap.capacity_lbl.cget("text"))
+        # Test Cascade
+        cmap.update_mode("cascade")
+        self.assertIn("Cascata", cmap.capacity_lbl.cget("text"))
 
 
 
@@ -1201,11 +1195,8 @@ class TestCascadeVisualMapAndDialogUI(unittest.TestCase):
 
 
 
-        # Cambia modalità in cascade_v2 senza ri-passare le chiavi
-
-
-
-        cmap.update_mode("cascade_v2")
+        # Cambia modalità in cascade senza ri-passare le chiavi
+        cmap.update_mode("cascade")
 
 
 
@@ -1229,7 +1220,7 @@ class TestCascadeVisualMapAndDialogUI(unittest.TestCase):
 
 
 
-        """Verifica che BancoAlimentareAppV3._normalize_display_to_provider mappi tutte le 8 stringhe visuali."""
+        """Verifica che BancoAlimentareAppV3._normalize_display_to_provider mappi tutte le stringhe visuali dei provider."""
 
 
 
@@ -1327,38 +1318,14 @@ class TestCascadeVisualMapAndDialogUI(unittest.TestCase):
 
 
 
-        # Cambia modello arbitro in Luna e disattiva switch
-
-
-
-        luna_disp = ARBITRATOR_DISPLAY_MAP["openai/gpt-6-luna"]
-
-
-
-        dlg.arbitrator_model_var.set(luna_disp)
-
-
-
+        # Cambia modello arbitro in Ember Minimal e disattiva switch
+        ember_disp = ARBITRATOR_DISPLAY_MAP["meta/muse-ember:minimal"]
+        dlg.arbitrator_model_var.set(ember_disp)
         dlg.enable_arbitrator_var.set(False)
 
-
-
-
-
-
-
         dlg._save()
-
-
-
-        self.assertEqual(saved.get("cascade_arbitrator_model"), "openai/gpt-6-luna")
-
-
-
-        self.assertEqual(saved.get("openrouter_arbitrator_model"), "openai/gpt-6-luna")
-
-
-
+        self.assertEqual(saved.get("cascade_arbitrator_model"), "meta/muse-ember:minimal")
+        self.assertEqual(saved.get("openrouter_arbitrator_model"), "meta/muse-ember:minimal")
         self.assertFalse(saved.get("enable_auto_arbitrator"))
 
 
@@ -1744,7 +1711,7 @@ class TestCascadeVisualMapAndDialogUI(unittest.TestCase):
         # Verifica range contrasto slider esteso fino a 3.0
         self.assertEqual(float(dlg.contrast_slider.cget("to")), 3.0)
 
-        dlg.cascade_free_var.set(CASCADE_FREE_MODES["gemini_35_then_38"])
+        dlg.cascade_free_var.set(CASCADE_FREE_MODES["gemini_35"])
         dlg.cascade_paid_var.set(CASCADE_PAID_MODES["none"])
         dlg.cascade_fallback_var.set(CASCADE_FALLBACK_MODES["none"])
         dlg.enable_arbitrator_on_free_var.set(False)
@@ -1756,7 +1723,7 @@ class TestCascadeVisualMapAndDialogUI(unittest.TestCase):
 
         dlg._save()
 
-        self.assertEqual(saved.get("cascade_free_primary_mode"), "gemini_35_then_38")
+        self.assertEqual(saved.get("cascade_free_primary_mode"), "gemini_35")
         self.assertEqual(saved.get("cascade_paid_mode"), "none")
         self.assertEqual(saved.get("cascade_fallback_mode"), "none")
         self.assertFalse(saved.get("enable_arbitrator_on_free"))

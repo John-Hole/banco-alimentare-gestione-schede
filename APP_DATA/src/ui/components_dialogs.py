@@ -40,9 +40,8 @@ from ..config import (
     SUPPORTED_OPENROUTER_MODELS,
 
     DEFAULT_CASCADE_GEMINI_MODEL,
-
+    DEFAULT_CASCADE_EMBER_MODEL,
     DEFAULT_CASCADE_LUNA_MODEL,
-
     DEFAULT_CASCADE_BUFFER_MODEL,
 
     DEFAULT_CASCADE_FREE_MODEL,
@@ -228,7 +227,7 @@ class _KeyRow(ctk.CTkFrame):
 
             badge_bg = "#ffedd5"
 
-            default_models = "Buffer Cascata (GPT-6 Luna · Haiku 5.5 · Nemotron) + Sonnet (Shift+Click)"
+            default_models = "Sezione 2 Cascata (Muse Ember · Haiku 5.5 · Nemotron) + Sonnet (Shift+Click)"
 
         else:
 
@@ -730,7 +729,7 @@ class AddApiKeyDialog(ctk.CTkToplevel):
 
                 text="🟠 Tipo: OpenRouter (Consigliata come paracadute e arbitro)\n"
 
-                     "• Abilita GPT-6 Luna, Claude Haiku 5.5 e Nemotron Gratis in caso di picchi.\n"
+                     "• Abilita Meta Muse Ember, Claude Haiku 5.5 e Nemotron Gratis in caso di picchi.\n"
 
                      "• Abilita l'arbitro matematico economico (~$0.0025) e Claude Sonnet 5.5 on-demand."
 
@@ -1132,11 +1131,7 @@ class CascadeVisualMap(ctk.CTkFrame):
 
 
 
-        eff_free = (
-            "gemini_38_then_35"
-            if prov == "cascade_v2"
-            else self._cfg.get("cascade_free_primary_mode", DEFAULT_CASCADE_FREE_PRIMARY_MODE)
-        )
+        eff_free = self._cfg.get("cascade_free_primary_mode", DEFAULT_CASCADE_FREE_PRIMARY_MODE)
         eff_paid = self._cfg.get("cascade_paid_mode", DEFAULT_CASCADE_PAID_MODE)
         eff_fb = self._cfg.get("cascade_fallback_mode", DEFAULT_CASCADE_FALLBACK_MODE)
         arb_free = bool(self._cfg.get("enable_arbitrator_on_free", self._cfg.get("enable_auto_arbitrator", True)))
@@ -1205,9 +1200,9 @@ class CascadeVisualMap(ctk.CTkFrame):
 
             arb_bdg = "🔴 CHIAVE MANCANTE"
 
-        if prov in ("cascade", "cascade_v2"):
+        if prov == "cascade":
 
-            tag_v = "Cascata v2 (Gemini 3.8 Primario)" if prov == "cascade_v2" else "Cascata v1 Personalizzabile"
+            tag_v = "Cascata Personalizzabile"
 
             if cap >= 1000:
 
@@ -1215,13 +1210,13 @@ class CascadeVisualMap(ctk.CTkFrame):
 
                 self.banner.configure(fg_color="#dcfce7", border_color="#86efac")
 
-                self.overall_badge.configure(text="MASSIMA CAPACITÀ 🟢" if prov == "cascade" else "ALTA VELOCITÀ ⚡", fg_color="#bbf7d0" if prov == "cascade" else "#bae6fd", text_color="#166534" if prov == "cascade" else "#0369a1")
+                self.overall_badge.configure(text="MASSIMA CAPACITÀ 🟢", fg_color="#bbf7d0", text_color="#166534")
 
             elif cap == 500:
 
-                self.capacity_lbl.configure(text=f"⚡ {tag_v} · {cap:,} schede/giorno ({rpm} RPM) · 0,00 €", text_color="#92400e" if prov == "cascade" else "#0369a1")
+                self.capacity_lbl.configure(text=f"⚡ {tag_v} · {cap:,} schede/giorno ({rpm} RPM) · 0,00 €", text_color="#92400e")
 
-                self.banner.configure(fg_color="#fef3c7" if prov == "cascade" else "#e0f2fe", border_color="#fde68a" if prov == "cascade" else "#bae6fd")
+                self.banner.configure(fg_color="#fef3c7", border_color="#fde68a")
 
                 self.overall_badge.configure(text="BUONA CAPACITÀ 🟡", fg_color="#fde68a", text_color="#92400e")
 
@@ -2188,23 +2183,14 @@ class SettingsDialog(ctk.CTkToplevel):
     SOURCE_LABELS = {"flatbed": "Piano Vetro", "adf": "Alimentatore ADF"}
 
     PROVIDER_DISPLAY_MAP = {
-
         "cascade": "🚀 Cascata Personalizzabile (3 Sezioni — Consigliata)",
-
-        "cascade_v2": "⚡ Cascata v2 (Gemini 3.8 Primario: 3.8 -> 3.5 -> Haiku -> Nemotron)",
-
         "gemini_35": "🆓 Gemini 3.5 Flash-Lite (Google API Diretta — Gratis)",
-
         "gemini_38": "✨ Gemini 3.8 Flash (Google API Diretta — Gratis)",
-
-        "or_luna_low": "🌙 GPT-6 Luna (Low Reasoning) (OpenRouter)",
-
+        "or_muse_minimal": "🔥 Meta Muse Ember (Minimal Reasoning) (OpenRouter)",
+        "or_muse_low": "🔥 Meta Muse Ember (Low Reasoning) (OpenRouter)",
         "or_haiku_low": "🦅 Claude Haiku 5.5 (Low Reasoning) (OpenRouter)",
-
         "or_sonnet": "🧠 Claude Sonnet 5.5 (OpenRouter)",
-
         "or_nemotron": "🆓 Nemotron 3.5 Super-VL (OpenRouter Free — Gratis)",
-
     }
 
     PROVIDER_INV_MAP = {v: k for k, v in PROVIDER_DISPLAY_MAP.items()}
@@ -3123,7 +3109,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
             arb_sw_frame,
 
-            text="Attiva Arbitro AI anche quando il modello A PAGAMENTO (Haiku / Luna) ha discrepanze (Doppio costo se attivo)",
+            text="Attiva Arbitro AI anche quando il modello A PAGAMENTO (Ember / Haiku) ha discrepanze (Doppio costo se attivo)",
 
             variable=self.enable_arbitrator_on_paid_var,
 
@@ -3141,7 +3127,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
             text="• Come funziona: l'Arbitro interviene SOLO se le righe non tornano con il totale dichiarato a fondo foglio (zero costi extra sulle schede perfette).\n"
 
-                 "• Tenendo il secondo switch spento, se risponde già Claude Haiku/Luna l'app mostra gli avvisi gialli/rossi senza pagare un secondo passaggio IA.\n"
+                 "• Tenendo il secondo switch spento, se risponde già Meta Muse Ember / Haiku l'app mostra gli avvisi gialli/rossi senza pagare un secondo passaggio IA.\n"
 
                  "• Claude Sonnet 5.5 protetto: attivabile manualmente in qualsiasi momento con Shift + Click su '⚡ Rianalizza IA' o Ctrl+Shift+R.",
 
@@ -3191,7 +3177,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
             adv_frame,
 
-            text="Usa il paracadute OpenRouter (Haiku / Luna / Nemotron) se le chiavi Google sono temporaneamente sature",
+            text="Usa il paracadute OpenRouter (Ember / Haiku / Nemotron) se le chiavi Google sono temporaneamente sature",
 
             variable=self.cross_fallback_var,
 
@@ -5436,9 +5422,10 @@ class SettingsDialog(ctk.CTkToplevel):
 
             "cascade_fallback_mode": fallback_mode,
 
-            "cascade_buffer_model": DEFAULT_CASCADE_LUNA_MODEL if paid_mode == "luna" else DEFAULT_CASCADE_BUFFER_MODEL,
-
-            "openrouter_buffer_model": DEFAULT_CASCADE_LUNA_MODEL if paid_mode == "luna" else DEFAULT_CASCADE_BUFFER_MODEL,
+            "cascade_buffer_model": DEFAULT_CASCADE_EMBER_MODEL if paid_mode in ("ember", "luna") else DEFAULT_CASCADE_BUFFER_MODEL,
+            "openrouter_buffer_model": DEFAULT_CASCADE_EMBER_MODEL if paid_mode in ("ember", "luna") else DEFAULT_CASCADE_BUFFER_MODEL,
+            "cascade_ember_model": DEFAULT_CASCADE_EMBER_MODEL,
+            "cascade_luna_model": DEFAULT_CASCADE_EMBER_MODEL,
 
             "openrouter_api_key": or_keys[0] if len(or_keys) > 0 else "",
 

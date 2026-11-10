@@ -608,8 +608,9 @@ class TestV4UIEnhancements(unittest.TestCase):
         from src.models import RawCardExtraction
 
         new_provs = [
+            ("or_muse_minimal", "meta/muse-ember", "minimal", "Meta Muse Ember (Minimal)"),
+            ("or_muse_low", "meta/muse-ember", "low", "Meta Muse Ember (Low)"),
             ("or_haiku_low", "anthropic/claude-haiku-5.5", "low", "Claude Haiku 5.5 (Low)"),
-            ("or_luna_low", "openai/gpt-6-luna", "low", "GPT-6 Luna (Low)"),
             ("or_sonnet", "anthropic/claude-sonnet-5.5", None, "Claude Sonnet 5.5"),
             ("or_nemotron", "nvidia/nemotron-3.5-super-vl:free", "none", "Nemotron 3.5 Super-VL"),
         ]
@@ -636,6 +637,13 @@ class TestV4UIEnhancements(unittest.TestCase):
             self.assertEqual(self.app.active_extractor.model, expected_model)
             self.assertEqual(self.app.active_extractor.reasoning_effort, expected_effort)
             self.assertEqual(self.app.active_extractor.display_name, expected_disp)
+            # Modelli ufficiali: fallback automatico attivo
+            self.assertIsNotNone(self.app.active_extractor.fallback_extractor)
+            self.assertTrue(self.app.active_extractor.enable_auto_fallback)
+
+        # Verifica normalizzazione retrocompatibile da chiavi ed etichette legacy
+        self.assertEqual(self.app._normalize_display_to_provider("or_luna_low"), "or_muse_minimal")
+        self.assertEqual(self.app._normalize_display_to_provider("GPT-6 Luna (Low)"), "or_muse_minimal")
 
         # Verifica campi tempo_elaborazione_sec e costo_usd su RawCardExtraction
         raw = RawCardExtraction(supermercato="TEST", tempo_elaborazione_sec=3.2, costo_usd=0.0014)
@@ -645,7 +653,7 @@ class TestV4UIEnhancements(unittest.TestCase):
     def test_generation_id_race_condition_prevention(self):
         """Verifica che il cambio modello o annullamento estrazione incrementi _extraction_generation_id."""
         init_gen = self.app._extraction_generation_id
-        self.app._on_provider_change(BancoAlimentareAppV3.PROVIDER_DISPLAY_LUNA_LOW)
+        self.app._on_provider_change(BancoAlimentareAppV3.PROVIDER_DISPLAY_MUSE_MINIMAL)
         self.assertGreater(self.app._extraction_generation_id, init_gen)
 
         curr_gen = self.app._extraction_generation_id

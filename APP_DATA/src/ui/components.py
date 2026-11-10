@@ -151,6 +151,7 @@ class ImageViewerV3(ctk.CTkFrame):
         on_image_changed_callback: Optional[Callable[[Path], None]] = None,
         on_sonnet_reprocess_callback: Optional[Callable[[], None]] = None,
         on_preset_changed_callback: Optional[Callable[[int], None]] = None,
+        on_raw_reset_callback: Optional[Callable[[Path], None]] = None,
         **kwargs,
     ):
         super().__init__(parent, corner_radius=12, fg_color="#ffffff", border_width=1, border_color="#e2e8f0", **kwargs)
@@ -158,6 +159,7 @@ class ImageViewerV3(ctk.CTkFrame):
         self.on_image_changed_callback = on_image_changed_callback
         self.on_sonnet_reprocess_callback = on_sonnet_reprocess_callback
         self.on_preset_changed_callback = on_preset_changed_callback
+        self.on_raw_reset_callback = on_raw_reset_callback
 
         self.current_image_path: Optional[Path] = None
         self.pil_image: Optional[Image.Image] = None
@@ -171,6 +173,9 @@ class ImageViewerV3(ctk.CTkFrame):
         self._contrast_steps: int = 0
         self.tk_image: Optional[ImageTk.PhotoImage] = None
         self.zoom_factor: float = 1.0
+
+        self._last_reset_click_time: float = 0.0
+        self._reset_single_click_timer = None
 
         self._pan_start_x = 0
         self._pan_start_y = 0
@@ -265,9 +270,13 @@ class ImageViewerV3(ctk.CTkFrame):
             inner_tb, text="↺ Reset", font=("Segoe UI", 10, "bold"),
             fg_color="#f1f5f9", text_color="#64748b", hover_color="#e2e8f0",
             corner_radius=6, width=54, height=30,
-            command=self.reset_image
+            command=self._on_reset_btn_clicked
         )
         self.reset_btn.pack(side=tk.LEFT, padx=1)
+        self.reset_btn.bind("<Double-Button-1>", self._on_reset_double_click_event)
+        for child in self.reset_btn.winfo_children():
+            child.bind("<Double-Button-1>", self._on_reset_double_click_event)
+        TooltipV3(self.reset_btn, "Clic singolo: Ripristina preset P0 e regolazioni\nDoppio clic rapido: Rimuove anche le tarature base dello scanner per questa scheda")
 
         # Separatore 2
         sep2 = ctk.CTkFrame(inner_tb, width=1, height=18, fg_color="#cbd5e1")
@@ -868,6 +877,83 @@ class ImageViewerV3(ctk.CTkFrame):
     def reset_image(self) -> bool:
         """Ripristina l'anteprima allo stato originale della scansione (P0)."""
         return self.apply_preset_0()
+
+    def _on_reset_btn_clicked(self):
+        """Gestisce il clic sul pulsante Reset distinguendo clic singolo da doppio clic rapido."""
+        now = time.time()
+        if (now - self._last_reset_click_time) < 0.40:
+            self._last_reset_click_time = 0.0
+            if self._reset_single_click_timer:
+                try:
+                    self.after_cancel(self._reset_single_click_timer)
+                except Exception:
+                    pass
+                self._reset_single_click_timer = None
+            self.reset_image_to_raw_untuned()
+            return
+        self._last_reset_click_time = now
+        if self._reset_single_click_timer:
+            try:
+                self.after_cancel(self._reset_single_click_timer)
+            except Exception:
+                pass
+        self._reset_single_click_timer = self.after(350, self._execute_reset_single_click)
+
+    def _execute_reset_single_click(self):
+        self._reset_single_click_timer = None
+        self.reset_image()
+
+    def _on_reset_double_click_event(self, event=None):
+        if self._reset_single_click_timer:
+            try:
+                self.after_cancel(self._reset_single_click_timer)
+            except Exception:
+                pass
+            self._reset_single_click_timer = None
+        self._last_reset_click_time = 0.0
+        self.reset_image_to_raw_untuned()
+        return "break"
+
+    def reset_image_to_raw_untuned(self) -> bool:
+        """Doppio clic: ripristina la scheda allo stato grezzo (.raw.jpg), togliendo la taratura base dello scanner."""
+        if not self.current_image_path or not Path(self.current_image_path).exists():
+            return False
+        import shutil
+        target = Path(self.current_image_path)
+        raw_backup = target.with_suffix(".raw.jpg")
+
+        if not raw_backup.exists():
+            try:
+                from ..scanner.scanner_service import ScannerService
+                arch = ScannerService.get_raw_archive(target)
+                if arch and Path(arch).exists():
+                    raw_backup = Path(arch)
+            except Exception:
+                pass
+
+        if raw_backup.exists():
+            try:
+                shutil.copy2(raw_backup, target)
+            except Exception as e:
+                try:
+                    from ..services.session_logger import get_session_logger
+                    get_session_logger().logger.warning(f"Errore ripristino raw da {raw_backup}: {e}")
+                except Exception:
+                    pass
+
+        key = str(target)
+        self._original_cache.pop(key, None)
+        self._processed_cache.pop(key, None)
+        self._preset_state_cache.pop(key, None)
+
+        self.load_image(str(target), initial_preset=0)
+
+        if self.on_raw_reset_callback:
+            try:
+                self.on_raw_reset_callback(target)
+            except Exception:
+                pass
+        return True
 
     def open_fullscreen(self):
         if self.current_image_path and self.current_image_path.exists():

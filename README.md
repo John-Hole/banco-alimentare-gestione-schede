@@ -5,7 +5,7 @@ Applicazione desktop per Windows per l'acquisizione automatica da scanner ADF/Pi
 <div align="center">
 
 [![Scarica ZIP](https://img.shields.io/badge/Scarica%20Versione%20Pronta-ZIP%20(Download%20Diretto)-success?style=for-the-badge&logo=github)](https://github.com/John-Hole/banco-alimentare-gestione-schede/archive/refs/heads/main.zip)
-[![Releases](https://img.shields.io/badge/GitHub-Releases%20v4.2-blue?style=for-the-badge&logo=github)](https://github.com/John-Hole/banco-alimentare-gestione-schede/releases)
+[![Releases](https://img.shields.io/badge/GitHub-Releases%20v4.3-blue?style=for-the-badge&logo=github)](https://github.com/John-Hole/banco-alimentare-gestione-schede/releases)
 
 </div>
 
@@ -40,9 +40,9 @@ flowchart TD
     end
 
     subgraph S2["2. Visione IA a Cascata Personalizzabile (3 Sezioni)"]
-        A4 --> B1{"🆓 Sezione 1 — Google Gemini Free<br/>(3.5 Flash-Lite / 3.8 Flash / Entrambi)<br/>Load-Balancing 2 Chiavi API"}
+        A4 --> B1{"🆓 Sezione 1 — Google Gemini Free<br/>(Gemini 3.5 Flash-Lite Gratis)<br/>Load-Balancing 2 Chiavi API"}
         B1 -- "Successo (100% Gratis)" --> C1["📋 JSON Strutturato Pesi & Totali"]
-        B1 -- "503 Sovraccarico o 429 Quota" --> B2{"💳 Sezione 2 — OpenRouter a Pagamento<br/>(Default: Haiku 5.5 · opp. GPT-6 Luna / Entrambi / OFF)"}
+        B1 -- "503 Sovraccarico o 429 Quota" --> B2{"💳 Sezione 2 — OpenRouter a Pagamento<br/>(Default: Meta Muse Ember Minimal · opp. Haiku 5.5 / Entrambi / OFF)"}
         B2 -- "Successo" --> C1
         B2 -- "Disattivato o Fallback" --> B3["🪂 Sezione 3 — Fallback Gratuito<br/>(Nemotron 3.5 Super-VL Free / OFF)"]
         B3 --> C1
@@ -91,20 +91,20 @@ L'applicazione esamina la scheda cartacea del corriere (**MOD. A**) ed estrae co
 
 Il sistema implementa una **cascata personalizzabile in 3 sezioni indipendenti** configurabile da `⚙️ Impostazioni -> 🚀 Flusso IA & Modelli` (la scelta del provider viene memorizzata anche ai riavvii successivi):
 
-1. **Sezione 1 — Modelli Google Gemini (100% Gratuiti)**:
-   * Configurabile a scelta tra **Solo Gemini 3.5 Flash-Lite** (default ad altissima velocità), **Solo Gemini 3.8 Flash**, oppure **catena tra entrambi** (`3.8 -> 3.5` o `3.5 -> 3.8`).
+1. **Sezione 1 — Modello Google Gemini (100% Gratuito)**:
+   * **Gemini 3.5 Flash-Lite** ad altissima velocità e zero costi (oppure disattivato). *Nota: Gemini 3.8 Flash rimane disponibile in alto come modello fisso singolo dedicato*.
    * **Load-Balancing Automatico su 2 Chiavi API**: l'applicazione alterna le chiamate tra due chiavi Google indipendenti, raddoppiando la capacità gratuita fino a **1.000 schede/giorno a costo zero**.
 2. **Sezione 2 — Buffer a Pagamento OpenRouter (Opzionale)**:
    * Subentra solo se Google restituisce errori temporanei (*HTTP 503*) o esaurisce le quote giornaliere (*HTTP 429*).
-   * Configurabile tra **Claude Haiku 5.5 Low** (*Default*), **GPT-6 Luna Low**, entrambi nell'ordine preferito, oppure **⚪ Disattivato** (nessuna spesa automatica garantita).
+   * Configurabile tra **Meta Muse Ember Minimal** (*Default economico ~$0.0010/scheda*), **Claude Haiku 5.5 Low**, entrambi nell'ordine preferito, oppure **⚪ Disattivato** (nessuna spesa automatica garantita).
 3. **Sezione 3 — Fallback Gratuito Finale OpenRouter**:
    * **Nemotron 3.5 Super-VL Free** (`nvidia/nemotron-3.5-super-vl:free`, default attivo) o **⚪ Disattivato**. Funziona da paracadute a costo zero se anche la Sezione 2 non è disponibile o disattivata.
 4. **Arbitro Matematico con 2 Switch Indipendenti**:
-   * **Switch "Arbitro su modelli Gratis"** (**ON di default**): se una scheda letta gratis (Gemini/Nemotron) ha una quadratura matematica dubbia, l'Arbitro (`Claude Haiku 5.5` o modello scelto) riesamina le cifre ambigue.
-   * **Switch "Arbitro dopo modelli a Pagamento"** (**OFF di default**): evita costi aggiuntivi non richiesti quando la lettura proviene già da `Haiku` o `Luna` (le discrepanze vengono comunque evidenziate subito all'operatore).
+   * **Switch "Arbitro su modelli Gratis"** (**ON di default**): se una scheda letta gratis (Gemini/Nemotron) ha una quadratura matematica dubbia, l'Arbitro (**Claude Haiku 5.5 Low** di default o modello scelto) riesamina le cifre ambigue.
+   * **Switch "Arbitro dopo modelli a Pagamento"** (**OFF di default**): evita costi aggiuntivi non richiesti quando la lettura proviene già da `Ember` o `Haiku` (le discrepanze vengono comunque evidenziate subito all'operatore).
    * **Claude Sonnet 5.5** rimane protetto e invocabile **solo manualmente** con `Shift + Click` su *Rianalizza IA* o `Ctrl+Shift+R`.
 
-> **Nota Scanner & Taratura Immagini**: il pre-processing esegue esclusivamente normalizzazione geometrica (ritaglio bordi bianchi, orientamento, deskew) e applica esattamente gli slider di **Luminosità / Contrasto (fino a 3.00x) / Nitidezza** configurati nelle Impostazioni in modo uniforme su **Anteprima**, **ADF**, **Piano Vetro** e **PDF/File da disco**, senza curve gamma nascoste e preservando sempre l'originale `.raw.jpg`.
+> **Nota Scanner & Taratura Immagini**: il pre-processing esegue esclusivamente normalizzazione geometrica (ritaglio bordi bianchi, orientamento, deskew) e applica esattamente gli slider di **Luminosità / Contrasto (fino a 3.00x) / Nitidezza** configurati nelle Impostazioni in modo uniforme su **Anteprima**, **ADF**, **Piano Vetro** e **PDF/File da disco**, senza curve gamma nascoste e preservando sempre l'originale `.raw.jpg`. Un **doppio clic rapido su `↺ Reset`** nella barra immagine ripristina all'istante l'immagine grezza non tarata per la sola scheda corrente.
 
 ---
 

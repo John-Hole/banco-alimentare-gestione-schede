@@ -46,6 +46,11 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
             "Content-Type": "application/json"
         }
 
+        eff = (self.reasoning_effort or "").lower()
+        is_deep_reasoning = eff in ("medium", "high", "xhigh", "max") or "muse-ember" in self.model.lower()
+        max_tokens_val = 16384 if is_deep_reasoning else 8192
+        req_timeout = (5, 60) if is_deep_reasoning else (5, 30)
+
         payload = {
             "model": self.model,
             "messages": [
@@ -68,17 +73,19 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
-            "max_tokens": 8192
+            "max_tokens": max_tokens_val
         }
 
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self.reasoning_effort}
         elif "nemotron" in self.model.lower():
             payload["reasoning"] = {"effort": "none"}
+        elif "muse-ember" in self.model.lower():
+            payload["reasoning"] = {"effort": "low"}
 
         t0 = time.time()
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=(5, 30))
+            resp = requests.post(url, headers=headers, json=payload, timeout=req_timeout)
             duration = time.time() - t0
             if resp.status_code != 200:
                 self.session_logger.log_ai_result("OpenRouter", "OpenRouter", self.model, resp.status_code, duration, is_success=False, error_msg=resp.text[:300])
@@ -135,17 +142,22 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
                 if not text_content or not text_content.strip():
                     text_content = msg.get("reasoning", "") or msg.get("reasoning_content", "") or ""
                 card = self.parse_json_response(text_content, finish_reason=finish_reason)
+                card.tempo_elaborazione_sec = round(duration, 1)
+                card.costo_usd = cost
+                disp_name = self.display_name or f"OpenRouter ({self.model})"
+                cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
+                badge = f"[{disp_name} | {duration:.1f}s | {cost_str}]"
                 if not self.is_valid_raw_extraction(card):
                     err_text = card.note_o_anomalie or "Risposta o JSON incompleto/non valido"
                     self.session_logger.logger.warning(
                         f"[OpenRouter] Risposta o JSON non valido/incompleto dal modello {self.model}: {err_text}. Avvio fallback..."
                     )
+                    if not self.enable_auto_fallback and not self.fallback_extractor:
+                        card.is_incomplete = True
+                        if badge not in (card.note_o_anomalie or ""):
+                            card.note_o_anomalie = f"{badge} [Estrazione Incompleta/Non Valida: {err_text}]".strip()
+                        return card
                 else:
-                    card.tempo_elaborazione_sec = round(duration, 1)
-                    card.costo_usd = cost
-                    disp_name = self.display_name or f"OpenRouter ({self.model})"
-                    cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
-                    badge = f"[{disp_name} | {duration:.1f}s | {cost_str}]"
                     if badge not in (card.note_o_anomalie or ""):
                         card.note_o_anomalie = f"{badge} {card.note_o_anomalie or ''}".strip()
                     return card
@@ -163,7 +175,12 @@ class OpenRouterVisionExtractor(BaseVisionExtractor):
             )
 
         if not self.enable_auto_fallback:
-            return RawCardExtraction(note_o_anomalie=f"Errore OpenRouter HTTP {status_code}: {err_text}", is_incomplete=True)
+            disp_name = self.display_name or f"OpenRouter ({self.model})"
+            return RawCardExtraction(
+                note_o_anomalie=f"[{disp_name} | {duration:.1f}s | Errore HTTP {status_code}]: {err_text}",
+                tempo_elaborazione_sec=round(duration, 1),
+                is_incomplete=True,
+            )
 
         # 2. Failover su Seconda Chiave OpenRouter (se presente)
         if self.backup_api_key and self.backup_api_key != self.api_key:

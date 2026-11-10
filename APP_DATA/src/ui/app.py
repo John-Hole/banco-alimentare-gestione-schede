@@ -10,7 +10,7 @@ import os
 
 import subprocess
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pathlib import Path
 
@@ -47,9 +47,8 @@ from ..config import (
     DEFAULT_GEMINI_MODEL,
 
     DEFAULT_CASCADE_GEMINI_MODEL,
-
     DEFAULT_CASCADE_V2_PRIMARY_MODEL,
-
+    DEFAULT_CASCADE_EMBER_MODEL,
     DEFAULT_CASCADE_LUNA_MODEL,
 
     DEFAULT_CASCADE_BUFFER_MODEL,
@@ -209,32 +208,21 @@ ctk.set_default_color_theme("blue")
 
 
 @dataclass(eq=False)
-
 class BatchItem:
-
     """Singolo foglio della coda di lavoro (lotto) con il suo stato di elaborazione."""
 
-
-
     image_path: str
-
     status: str = "pending"   # pending | processing | ready | written | error
-
     raw: Optional[RawCardExtraction] = None
-
     card: Optional[ProcessedCard] = None
-
     error: str = ""
-
     preset_id: int = 0
-
     ai_image_path: Optional[str] = None
-
     force_strong: bool = False
-
     raw_archive_path: Optional[str] = None
-
     raw_assigned_market: str = ""
+    progress_logs: List[str] = field(default_factory=list)
+    last_progress_title: str = ""
 
 
 
@@ -257,6 +245,13 @@ class BancoAlimentareApp(ctk.CTk):
         self.minsize(1120, 740)
 
         self.configure(fg_color="#f1f5f9")
+
+        # Avvio immediato a schermo intero massimizzato
+        try:
+            self.state("zoomed")
+        except Exception:
+            pass
+        self.after(50, self._ensure_maximized)
 
 
 
@@ -399,124 +394,76 @@ class BancoAlimentareApp(ctk.CTk):
 
 
 
+    def _ensure_maximized(self):
+        """Forza lo stato massimizzato a pieno schermo all'avvio."""
+        try:
+            self.state("zoomed")
+        except Exception:
+            pass
+
     # Etichette del menu provider nell'header nell'ordine esatto richiesto
-
     PROVIDER_DISPLAY_CASCADE = "🚀 Cascata Personalizzabile (3 Sezioni — Consigliata)"
-
-    PROVIDER_DISPLAY_CASCADE_V2 = "⚡ Cascata v2 (Gemini 3.8 Primario: 3.8 -> 3.5 -> Haiku -> Nemotron)"
-
     PROVIDER_DISPLAY_GEMINI_35 = "🆓 Gemini 3.5 Flash-Lite (Google API Diretta — Gratis)"
-
     PROVIDER_DISPLAY_GEMINI_38 = "✨ Gemini 3.8 Flash (Google API Diretta — Gratis)"
-
-    PROVIDER_DISPLAY_LUNA_LOW = "🌙 GPT-6 Luna (Low Reasoning) (OpenRouter)"
-
+    PROVIDER_DISPLAY_MUSE_MINIMAL = "🔥 Meta Muse Ember (Minimal Reasoning) (OpenRouter)"
+    PROVIDER_DISPLAY_MUSE_LOW = "🔥 Meta Muse Ember (Low Reasoning) (OpenRouter)"
     PROVIDER_DISPLAY_HAIKU_LOW = "🦅 Claude Haiku 5.5 (Low Reasoning) (OpenRouter)"
-
     PROVIDER_DISPLAY_OR_SONNET = "🧠 Claude Sonnet 5.5 (OpenRouter)"
-
     PROVIDER_DISPLAY_OR_NEMOTRON = "🆓 Nemotron 3.5 Super-VL (OpenRouter Free — Gratis)"
 
-
-
     PROVIDER_DISPLAY_VALUES = [
-
         PROVIDER_DISPLAY_CASCADE,
-
-        PROVIDER_DISPLAY_CASCADE_V2,
-
         PROVIDER_DISPLAY_GEMINI_35,
-
         PROVIDER_DISPLAY_GEMINI_38,
-
-        PROVIDER_DISPLAY_LUNA_LOW,
-
+        PROVIDER_DISPLAY_MUSE_MINIMAL,
+        PROVIDER_DISPLAY_MUSE_LOW,
         PROVIDER_DISPLAY_HAIKU_LOW,
-
         PROVIDER_DISPLAY_OR_SONNET,
-
         PROVIDER_DISPLAY_OR_NEMOTRON,
-
     ]
 
-
-
     PROVIDER_KEY_MAP = {
-
         "cascade": PROVIDER_DISPLAY_CASCADE,
-
-        "cascade_v2": PROVIDER_DISPLAY_CASCADE_V2,
-
         "gemini_35": PROVIDER_DISPLAY_GEMINI_35,
-
         "gemini_38": PROVIDER_DISPLAY_GEMINI_38,
-
-        "or_luna_low": PROVIDER_DISPLAY_LUNA_LOW,
-
+        "or_muse_minimal": PROVIDER_DISPLAY_MUSE_MINIMAL,
+        "or_muse_low": PROVIDER_DISPLAY_MUSE_LOW,
         "or_haiku_low": PROVIDER_DISPLAY_HAIKU_LOW,
-
         "or_sonnet": PROVIDER_DISPLAY_OR_SONNET,
-
         "or_nemotron": PROVIDER_DISPLAY_OR_NEMOTRON,
-
     }
-
     PROVIDER_INV_MAP = {v: k for k, v in PROVIDER_KEY_MAP.items()}
 
-
-
     @classmethod
-
     def _normalize_display_to_provider(cls, disp: str) -> str:
-
         """Converte un'etichetta visuale nel codice provider interno."""
-
         d = (disp or "").strip()
-
         if d in cls.PROVIDER_INV_MAP:
-
             return cls.PROVIDER_INV_MAP[d]
-
         if d in cls.PROVIDER_KEY_MAP:
-
             return d
-
         dl = d.lower()
-
         if dl in cls.PROVIDER_KEY_MAP:
-
             return dl
-
         if "nemotron" in dl:
-
             return "or_nemotron"
-
         if "cascata v2" in dl or "cascade_v2" in dl or "cascade v2" in dl:
-
-            return "cascade_v2"
-
-        if "cascade" in dl or "cascata" in dl:
-
             return "cascade"
-
+        if "cascade" in dl or "cascata" in dl:
+            return "cascade"
         if "3.8" in dl:
-
             return "gemini_38"
-
         if "3.5" in dl:
-
             return "gemini_35"
-
-        if "luna" in dl:
-
-            return "or_luna_low"
-
+        if "luna" in dl or dl == "or_luna_low":
+            return "or_muse_minimal"
         if "haiku" in dl:
-
             return "or_haiku_low"
-
+        if "muse" in dl or "ember" in dl:
+            if "minimal" in dl:
+                return "or_muse_minimal"
+            return "or_muse_low"
         if "sonnet" in dl:
-
             return "or_sonnet"
 
         # Retrocompatibilità
@@ -530,8 +477,7 @@ class BancoAlimentareApp(ctk.CTk):
             return "cascade"
 
         if "terra" in dl:
-
-            return "or_luna_low"
+            return "or_muse_minimal"
 
         if "mimo" in dl or "xiaomi" in dl:
 
@@ -629,49 +575,41 @@ class BancoAlimentareApp(ctk.CTk):
 
 
 
-        def make_luna(fb=None):
-
+        def make_ember_minimal(fb=None):
             return OpenRouterVisionExtractor(
-
                 api_key=or_key1,
-
                 backup_api_key=or_key2,
-
-                model="openai/gpt-6-luna",
-
-                reasoning_effort="low",
-
-                display_name="GPT-6 Luna (Fallback)",
-
+                model="meta/muse-ember",
+                reasoning_effort="minimal",
+                display_name="Meta Muse Ember (Minimal) (Fallback)",
                 fallback_extractor=fb,
-
                 enable_auto_fallback=enable_fb
-
             ) if or_key1 else fb
 
+        def make_ember_low(fb=None):
+            return OpenRouterVisionExtractor(
+                api_key=or_key1,
+                backup_api_key=or_key2,
+                model="meta/muse-ember",
+                reasoning_effort="low",
+                display_name="Meta Muse Ember (Low) (Fallback)",
+                fallback_extractor=fb,
+                enable_auto_fallback=enable_fb
+            ) if or_key1 else fb
 
+        def make_luna(fb=None):
+            return make_ember_minimal(fb)
 
         def make_gemini_35(fb=None):
-
             return GeminiVisionExtractor(
-
                 api_key=key1,
-
                 backup_api_key=key2,
-
                 primary_label="Google 1",
-
                 backup_label="Google 2",
-
                 model="gemini-3.5-flash-lite",
-
                 fallback_extractor=fb,
-
                 enable_auto_fallback=enable_fb
-
             ) if (key1 or key2) else fb
-
-
 
         arb_free = bool(
             self.config_data.get(
@@ -684,234 +622,114 @@ class BancoAlimentareApp(ctk.CTk):
         free_mode = self.config_data.get("cascade_free_primary_mode", DEFAULT_CASCADE_FREE_PRIMARY_MODE)
         paid_mode = self.config_data.get("cascade_paid_mode", DEFAULT_CASCADE_PAID_MODE)
         fallback_mode = self.config_data.get("cascade_fallback_mode", DEFAULT_CASCADE_FALLBACK_MODE)
-        luna_model = self.config_data.get("cascade_luna_model", DEFAULT_CASCADE_LUNA_MODEL)
+        ember_model = self.config_data.get("cascade_ember_model", self.config_data.get("cascade_luna_model", DEFAULT_CASCADE_EMBER_MODEL))
+        luna_model = ember_model
 
-        if provider == "cascade_v2":
-
-            self.active_extractor = CascadeVisionExtractor(
-
-                gemini_api_key_1=key1,
-
-                gemini_api_key_2=key2,
-
-                openrouter_api_key=or_key1,
-
-                gemini_model=self.config_data.get("cascade_gemini_model", DEFAULT_CASCADE_GEMINI_MODEL),
-
-                gemini_38_model=DEFAULT_CASCADE_V2_PRIMARY_MODEL,
-
-                luna_model=luna_model,
-
-                buffer_model=self.config_data.get("cascade_buffer_model") or self.config_data.get("openrouter_buffer_model", DEFAULT_CASCADE_BUFFER_MODEL),
-
-                haiku_model=self.config_data.get("cascade_haiku_model", DEFAULT_CASCADE_HAIKU_MODEL),
-
-                free_model=self.config_data.get("cascade_free_model") or self.config_data.get("openrouter_free_model", DEFAULT_CASCADE_FREE_MODEL),
-
-                arbitrator_model=self.config_data.get("cascade_arbitrator_model", self.config_data.get("openrouter_arbitrator_model", DEFAULT_CASCADE_ARBITRATOR_MODEL)),
-
-                enable_auto_arbitrator=arb_any,
-
-                enable_arbitrator_on_free=arb_free,
-
-                enable_arbitrator_on_paid=arb_paid,
-
-                free_primary_mode="gemini_38_then_35",
-
-                paid_mode=paid_mode,
-
-                fallback_mode=fallback_mode,
-
-                quota_tracker=self.quota_tracker,
-
-                variant="v2",
-
-            )
-
-        elif provider == "gemini_35":
-
-            # Catena: Gemini 3.5 Lite -> GPT-6 Luna -> Claude Haiku -> Nemotron Free
-
-            fb_chain = make_luna(make_haiku(make_nemotron(None))) if enable_fb else None
-
+        if provider == "gemini_35":
+            # Catena: Gemini 3.5 Lite -> Muse Ember Minimal -> Claude Haiku -> Nemotron Free
+            fb_chain = make_ember_minimal(make_haiku(make_nemotron(None))) if enable_fb else None
             self.active_extractor = GeminiVisionExtractor(
-
                 api_key=key1,
-
                 backup_api_key=key2,
-
                 primary_label="Google 1",
-
                 backup_label="Google 2",
-
                 model="gemini-3.5-flash-lite",
-
                 fallback_extractor=fb_chain,
-
                 enable_auto_fallback=enable_fb
-
             )
-
         elif provider == "gemini_38":
-
-            # Catena: Gemini 3.8 Flash -> Gemini 3.5 Lite -> GPT-6 Luna -> Claude Haiku -> Nemotron Free
-
-            fb_35 = make_gemini_35(make_luna(make_haiku(make_nemotron(None)))) if enable_fb else None
-
+            # Catena: Gemini 3.8 Flash -> Gemini 3.5 Lite -> Muse Ember Minimal -> Claude Haiku -> Nemotron Free
+            fb_35 = make_gemini_35(make_ember_minimal(make_haiku(make_nemotron(None)))) if enable_fb else None
             self.active_extractor = GeminiVisionExtractor(
-
                 api_key=key1,
-
                 backup_api_key=key2,
-
                 primary_label="Google 1",
-
                 backup_label="Google 2",
-
                 model="gemini-3.8-flash",
-
                 fallback_extractor=fb_35,
-
                 enable_auto_fallback=enable_fb
-
             )
-
-        elif provider == "or_luna_low":
-
-            # Catena: GPT-6 Luna -> Claude Haiku -> Nemotron Free -> Gemini 3.5 Lite
-
+        elif provider in ("or_muse_minimal", "or_luna_low"):
+            # Catena: Meta Muse Ember Minimal -> Claude Haiku -> Nemotron Free -> Gemini 3.5 Lite
             fb_chain = make_haiku(make_nemotron(make_gemini_35(None))) if enable_fb else None
-
             self.active_extractor = OpenRouterVisionExtractor(
-
                 api_key=or_key1,
-
                 backup_api_key=or_key2,
-
-                model="openai/gpt-6-luna",
-
-                reasoning_effort="low",
-
-                display_name="GPT-6 Luna (Low)",
-
+                model="meta/muse-ember",
+                reasoning_effort="minimal",
+                display_name="Meta Muse Ember (Minimal)",
                 fallback_extractor=fb_chain,
-
                 enable_auto_fallback=enable_fb
-
             )
-
+        elif provider in ("or_muse_low", "or_muse_medium", "or_muse_max"):
+            # Catena: Meta Muse Ember Low -> Claude Haiku -> Nemotron Free -> Gemini 3.5 Lite
+            fb_chain = make_haiku(make_nemotron(make_gemini_35(None))) if enable_fb else None
+            self.active_extractor = OpenRouterVisionExtractor(
+                api_key=or_key1,
+                backup_api_key=or_key2,
+                model="meta/muse-ember",
+                reasoning_effort="low",
+                display_name="Meta Muse Ember (Low)",
+                fallback_extractor=fb_chain,
+                enable_auto_fallback=enable_fb
+            )
         elif provider == "or_haiku_low":
-
-            # Catena: Claude Haiku -> Nemotron Free -> Gemini 3.5 Lite -> GPT-6 Luna
-
-            fb_chain = make_nemotron(make_gemini_35(make_luna(None))) if enable_fb else None
-
+            # Catena: Claude Haiku -> Muse Ember Minimal -> Nemotron Free -> Gemini 3.5 Lite
+            fb_chain = make_ember_minimal(make_nemotron(make_gemini_35(None))) if enable_fb else None
             self.active_extractor = OpenRouterVisionExtractor(
-
                 api_key=or_key1,
-
                 backup_api_key=or_key2,
-
                 model="anthropic/claude-haiku-5.5",
-
                 reasoning_effort="low",
-
                 display_name="Claude Haiku 5.5 (Low)",
-
                 fallback_extractor=fb_chain,
-
                 enable_auto_fallback=enable_fb
-
             )
-
         elif provider == "or_sonnet":
-
-            # Catena: Claude Sonnet -> Gemini 3.5 Lite -> GPT-6 Luna -> Claude Haiku -> Nemotron Free
-
-            fb_chain = make_gemini_35(make_luna(make_haiku(make_nemotron(None)))) if enable_fb else None
-
+            # Catena: Claude Sonnet -> Gemini 3.5 Lite -> Muse Ember Minimal -> Claude Haiku -> Nemotron Free
+            fb_chain = make_gemini_35(make_ember_minimal(make_haiku(make_nemotron(None)))) if enable_fb else None
             self.active_extractor = OpenRouterVisionExtractor(
-
                 api_key=or_key1,
-
                 backup_api_key=or_key2,
-
                 model="anthropic/claude-sonnet-5.5",
-
                 reasoning_effort=None,
-
                 display_name="Claude Sonnet 5.5",
-
                 fallback_extractor=fb_chain,
-
                 enable_auto_fallback=enable_fb
-
             )
-
         elif provider == "or_nemotron":
-
-            # Catena: Nemotron Free -> Gemini 3.5 Lite -> GPT-6 Luna -> Claude Haiku
-
-            fb_chain = make_gemini_35(make_luna(make_haiku(None))) if enable_fb else None
-
+            # Catena: Nemotron Free -> Gemini 3.5 Lite -> Muse Ember Minimal -> Claude Haiku
+            fb_chain = make_gemini_35(make_ember_minimal(make_haiku(None))) if enable_fb else None
             self.active_extractor = OpenRouterVisionExtractor(
-
                 api_key=or_key1,
-
                 backup_api_key=or_key2,
-
                 model="nvidia/nemotron-3.5-super-vl:free",
-
                 reasoning_effort="none",
-
                 display_name="Nemotron 3.5 Super-VL",
-
                 fallback_extractor=fb_chain,
-
                 enable_auto_fallback=enable_fb
-
             )
-
         else:
-
             # Predefinito: Cascata Personalizzabile a 3 Sezioni
-
             self.active_extractor = CascadeVisionExtractor(
-
                 gemini_api_key_1=key1,
-
                 gemini_api_key_2=key2,
-
                 openrouter_api_key=or_key1,
-
                 gemini_model=self.config_data.get("cascade_gemini_model", DEFAULT_CASCADE_GEMINI_MODEL),
-
                 gemini_38_model=DEFAULT_CASCADE_V2_PRIMARY_MODEL,
-
+                ember_model=ember_model,
                 luna_model=luna_model,
-
                 buffer_model=self.config_data.get("cascade_buffer_model") or self.config_data.get("openrouter_buffer_model", DEFAULT_CASCADE_BUFFER_MODEL),
-
                 haiku_model=self.config_data.get("cascade_haiku_model", DEFAULT_CASCADE_HAIKU_MODEL),
-
                 free_model=self.config_data.get("cascade_free_model") or self.config_data.get("openrouter_free_model", DEFAULT_CASCADE_FREE_MODEL),
-
                 arbitrator_model=self.config_data.get("cascade_arbitrator_model", self.config_data.get("openrouter_arbitrator_model", DEFAULT_CASCADE_ARBITRATOR_MODEL)),
-
                 enable_auto_arbitrator=arb_any,
-
                 enable_arbitrator_on_free=arb_free,
-
                 enable_arbitrator_on_paid=arb_paid,
-
                 free_primary_mode=free_mode,
-
                 paid_mode=paid_mode,
-
                 fallback_mode=fallback_mode,
-
                 quota_tracker=self.quota_tracker,
-
             )
 
 
@@ -1176,7 +994,9 @@ class BancoAlimentareApp(ctk.CTk):
 
         self.bind("<Control-Shift-r>", lambda e: self._on_reprocess_sonnet())
 
-
+        # Navigazione immediata con le freccette della tastiera sulla tabella categorie
+        for arrow_key in ("<Up>", "<Down>", "<Left>", "<Right>"):
+            self.bind_all(arrow_key, self._on_global_arrow_key)
 
         if hasattr(self, "tree") and self.tree:
 
@@ -1193,6 +1013,55 @@ class BancoAlimentareApp(ctk.CTk):
             self.tree.bind("<Key-Tab>", self._on_tab_pressed)
 
 
+
+    def _on_global_arrow_key(self, event):
+        """Permette la navigazione immediata con le freccette sulla tabella 13 categorie."""
+        if not event:
+            return
+        focused = self.focus_get()
+        if isinstance(focused, (tk.Entry, tk.Text, ttk.Combobox, ctk.CTkEntry)):
+            return
+        w_str = str(focused).lower() if focused else ""
+        if "entry" in w_str or "text" in w_str or "combobox" in w_str:
+            return
+
+        if not hasattr(self, "tree") or not self.tree.winfo_ismapped():
+            return
+
+        children = self.tree.get_children()
+        if not children:
+            return
+
+        if focused != self.tree:
+            sel = self.tree.selection()
+            target = sel[0] if sel else children[0]
+            self.tree.selection_set(target)
+            self.tree.focus(target)
+            self.tree.see(target)
+            self.tree.focus_set()
+
+            if event.keysym == "Down" and not sel:
+                return "break"
+            elif event.keysym == "Right":
+                self._on_tree_expand(event)
+                return "break"
+            elif event.keysym == "Left":
+                self._on_tree_collapse(event)
+                return "break"
+
+    def _focus_tree_if_ready(self):
+        """Dà il focus alla tabella categorie se sono presenti elementi per permettere la navigazione immediata."""
+        try:
+            if hasattr(self, "tree") and self.tree.winfo_ismapped():
+                children = self.tree.get_children()
+                if children:
+                    if not self.tree.selection():
+                        self.tree.selection_set(children[0])
+                        self.tree.focus(children[0])
+                        self.tree.see(children[0])
+                    self.tree.focus_set()
+        except Exception:
+            pass
 
     def _on_tab_pressed(self, event=None):
 
@@ -2102,9 +1971,24 @@ class BancoAlimentareApp(ctk.CTk):
 
             on_preset_changed_callback=self._on_preset_changed,
 
+            on_raw_reset_callback=self._on_viewer_raw_reset,
+
         )
 
         self.image_viewer.pack(fill=tk.BOTH, expand=True)
+
+
+
+    def _on_viewer_raw_reset(self, image_path: Path):
+        """Doppio clic su Reset: rimosse le impostazioni di base dello scanner per la scheda corrente."""
+        self._show_toast("↺ Rimosse modifiche base scanner: scheda ripristinata allo stato grezzo originale")
+        item = self._current_item()
+        if item is not None:
+            item.preset_id = 0
+            item.ai_image_path = str(image_path)
+            if self._strip_visible and item in self.batch_items:
+                idx = self.batch_items.index(item)
+                self.batch_strip.refresh_item(idx, reload_image=True)
 
 
 
@@ -4300,13 +4184,13 @@ class BancoAlimentareApp(ctk.CTk):
 
 
 
-        if provider in ("cascade", "cascade_v2"):
+        if provider == "cascade":
 
             st = get_pipeline_status(self.config_data)
 
             cap = st["daily_free_capacity"]
 
-            title = "🚀 Cascata Personalizzabile (3 Sezioni)" if provider == "cascade" else "⚡ Cascata v2 (Gemini 3.8 Primario)"
+            title = "🚀 Cascata Personalizzabile (3 Sezioni)"
 
             return (
 
@@ -4650,6 +4534,7 @@ class BancoAlimentareApp(ctk.CTk):
         if acquired:
 
             self._load_batch(acquired)
+            self.after(100, self._focus_tree_if_ready)
 
 
 
@@ -4757,6 +4642,7 @@ class BancoAlimentareApp(ctk.CTk):
                     extra = f" ({skipped} bianchi scartati)" if skipped else ""
 
                     self._show_toast(f"✓ {len(pages)} fogli in coda{extra}")
+                    self.after(100, self._focus_tree_if_ready)
 
                 elif skipped:
 
@@ -4856,19 +4742,16 @@ class BancoAlimentareApp(ctk.CTk):
             self.session_logger.logger.warning(f"[STREAMING SCAN] Errore preparazione scansione '{p_str}': {e}")
             item = BatchItem(image_path=p_str, preset_id=0, ai_image_path=p_str, raw_archive_path=raw_arch)
 
+        self._commit_current_item()
         if all(i.status == "written" for i in self.batch_items):
             self.batch_items = []
             self.batch_index = -1
 
-        is_first_page = (len(self.batch_items) == 0)
+        new_idx = len(self.batch_items)
         self.batch_items.append(item)
-
-        if is_first_page:
-            self.batch_index = 0
-            self._refresh_batch_strip(0)
-            self._select_batch_item(0)
-        else:
-            self._refresh_batch_strip(self.batch_index if self.batch_index >= 0 else 0)
+        self.batch_index = new_idx
+        self._refresh_batch_strip(new_idx)
+        self._select_batch_item(new_idx)
 
         if not self._extracting:
             self._process_next_pending()
@@ -5246,18 +5129,30 @@ class BancoAlimentareApp(ctk.CTk):
             self.alerts_title_lbl.configure(text=f"⚠️ ERRORE IA: {item.error[:70]}", text_color="#b91c1c")
 
         elif item.status == "processing":
-            self.alerts_title_lbl.configure(text="⏳ ELABORAZIONE IA IN CORSO...", text_color="#b45309")
+            title = item.last_progress_title or "⏳ ELABORAZIONE IA IN CORSO..."
+            self.alerts_title_lbl.configure(text=title, text_color="#b45309")
             self.alerts_text.config(state=tk.NORMAL)
             self.alerts_text.delete("1.0", tk.END)
-            from datetime import datetime
-            now_str = datetime.now().strftime("%H:%M:%S")
-            self.alerts_text.insert(tk.END, f"[{now_str}] 🚀 Elaborazione del foglio #{idx+1} in corso...\n")
+            self.alerts_text.config(bg="#f8fafc")
+            if item.progress_logs:
+                for line in item.progress_logs:
+                    self.alerts_text.insert(tk.END, f"{line}\n")
+            else:
+                from datetime import datetime
+                now_str = datetime.now().strftime("%H:%M:%S")
+                self.alerts_text.insert(tk.END, f"[{now_str}] 🚀 Elaborazione del foglio #{idx+1} in corso...\n")
+            self.alerts_text.see(tk.END)
             self.alerts_text.config(state=tk.DISABLED)
         else:
             self.alerts_title_lbl.configure(text=f"⏳ In coda per elaborazione (foglio {idx+1} di {len(self.batch_items)})", text_color="#64748b")
             self.alerts_text.config(state=tk.NORMAL)
             self.alerts_text.delete("1.0", tk.END)
-            self.alerts_text.insert(tk.END, f"Il foglio #{idx+1} è in coda di elaborazione.\nVerrà analizzato automaticamente dall'IA appena il precedente sarà completato.\n")
+            if item.progress_logs:
+                for line in item.progress_logs:
+                    self.alerts_text.insert(tk.END, f"{line}\n")
+            else:
+                self.alerts_text.insert(tk.END, f"Il foglio #{idx+1} è in coda di elaborazione.\nVerrà analizzato automaticamente dall'IA appena il precedente sarà completato.\n")
+            self.alerts_text.see(tk.END)
             self.alerts_text.config(state=tk.DISABLED)
 
         self._update_write_button_state()
@@ -5284,13 +5179,18 @@ class BancoAlimentareApp(ctk.CTk):
         """Aggiorna in tempo reale il box e l'etichetta di stato durante l'elaborazione IA."""
         if not msg:
             return
+        from datetime import datetime
+        now_str = datetime.now().strftime("%H:%M:%S")
+        log_line = f"[{now_str}] {msg}"
+        cur = self._current_item()
+        if cur is not None:
+            cur.last_progress_title = f"⏳ {msg[:60]}"
+            cur.progress_logs.append(log_line)
         try:
             self.alerts_title_lbl.configure(text=f"⏳ {msg[:60]}", text_color="#b45309")
             self.alerts_text.config(state=tk.NORMAL)
             self.alerts_text.config(bg="#f8fafc")
-            from datetime import datetime
-            now_str = datetime.now().strftime("%H:%M:%S")
-            self.alerts_text.insert(tk.END, f"[{now_str}] {msg}\n")
+            self.alerts_text.insert(tk.END, f"{log_line}\n")
             self.alerts_text.see(tk.END)
             self.alerts_text.config(state=tk.DISABLED)
         except Exception:
@@ -5554,19 +5454,43 @@ class BancoAlimentareApp(ctk.CTk):
 
 
 
+        def on_item_progress(msg: str):
+            if not msg:
+                return
+            from datetime import datetime
+            now_str = datetime.now().strftime("%H:%M:%S")
+            log_line = f"[{now_str}] {msg}"
+            target.progress_logs.append(log_line)
+            target.last_progress_title = f"⏳ {msg[:60]}"
+            if target is self._current_item():
+                try:
+                    self.alerts_title_lbl.configure(text=target.last_progress_title, text_color="#b45309")
+                    self.alerts_text.config(state=tk.NORMAL)
+                    self.alerts_text.config(bg="#f8fafc")
+                    self.alerts_text.insert(tk.END, f"{log_line}\n")
+                    self.alerts_text.see(tk.END)
+                    self.alerts_text.config(state=tk.DISABLED)
+                except Exception:
+                    pass
+
+        target.progress_logs = []
+        target.last_progress_title = "⏳ ELABORAZIONE IA IN CORSO..."
+        from datetime import datetime
+        start_str = datetime.now().strftime("%H:%M:%S")
+        target.progress_logs.append(f"[{start_str}] 🚀 Avvio analisi del foglio...")
+
         if target is self._current_item():
             try:
-                self.alerts_title_lbl.configure(text="⏳ ELABORAZIONE IA IN CORSO...", text_color="#b45309")
+                self.alerts_title_lbl.configure(text=target.last_progress_title, text_color="#b45309")
                 self.alerts_text.config(state=tk.NORMAL)
                 self.alerts_text.delete("1.0", tk.END)
-                from datetime import datetime
-                now_str = datetime.now().strftime("%H:%M:%S")
-                self.alerts_text.insert(tk.END, f"[{now_str}] 🚀 Avvio analisi del foglio...\n")
+                self.alerts_text.config(bg="#f8fafc")
+                self.alerts_text.insert(tk.END, f"[{start_str}] 🚀 Avvio analisi del foglio...\n")
                 self.alerts_text.config(state=tk.DISABLED)
             except Exception:
                 pass
 
-        task = BackgroundTask(self, work, on_done, on_progress=self._on_extraction_progress)
+        task = BackgroundTask(self, work, on_done, on_progress=on_item_progress)
 
         self._active_extraction_task = task
 
@@ -6816,6 +6740,7 @@ class BancoAlimentareApp(ctk.CTk):
                 try:
 
                     self.after_idle(self.tree.focus_set)
+                    self.after(50, self._focus_tree_if_ready)
 
                 except Exception:
 

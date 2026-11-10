@@ -57,29 +57,18 @@ from .gemini_extractor import GEMINI_RESPONSE_SCHEMA, GeminiVisionExtractor, bui
 from ..models import RawCardExtraction, BoxItem
 
 from ..config import (
-
     DEFAULT_CASCADE_GEMINI_MODEL,
-
     DEFAULT_CASCADE_V2_PRIMARY_MODEL,
-
+    DEFAULT_CASCADE_EMBER_MODEL,
     DEFAULT_CASCADE_LUNA_MODEL,
-
     DEFAULT_CASCADE_BUFFER_MODEL,
-
     DEFAULT_CASCADE_HAIKU_MODEL,
-
     DEFAULT_CASCADE_FREE_MODEL,
-
     DEFAULT_CASCADE_ARBITRATOR_MODEL,
-
     DEFAULT_CASCADE_FREE_PRIMARY_MODE,
-
     DEFAULT_CASCADE_PAID_MODE,
-
     DEFAULT_CASCADE_FALLBACK_MODE,
-
     normalize_category_name,
-
 )
 
 from ..services.quota_tracker import get_quota_tracker
@@ -127,96 +116,58 @@ class CascadeVisionExtractor(BaseVisionExtractor):
         free_primary_mode: Optional[str] = None,
 
         paid_mode: Optional[str] = None,
-
         fallback_mode: Optional[str] = None,
-
-        luna_model: str = DEFAULT_CASCADE_LUNA_MODEL,
-
+        ember_model: str = DEFAULT_CASCADE_EMBER_MODEL,
+        luna_model: Optional[str] = None,
         quota_tracker: Optional[Any] = None,
-
         free_fallback_model: Optional[str] = None,
-
         variant: Optional[str] = None,
-
         **kwargs,
-
     ):
-
         self.k1 = (gemini_api_key_1 or "").strip()
-
         self.k2 = (gemini_api_key_2 or "").strip()
-
         self.gemini_key_1 = self.k1
-
         self.gemini_key_2 = self.k2
-
         self.or_key = (openrouter_api_key or "").strip()
 
-
-
         self.gemini_model = gemini_model or DEFAULT_CASCADE_GEMINI_MODEL
-
         self.gemini_38_model = gemini_38_model or DEFAULT_CASCADE_V2_PRIMARY_MODEL
-
         self.buffer_model = buffer_model or DEFAULT_CASCADE_BUFFER_MODEL
-
-        self.luna_model = (
-            buffer_model if (buffer_model and "luna" in str(buffer_model).lower()) else (luna_model or DEFAULT_CASCADE_LUNA_MODEL)
+        self.ember_model = (
+            buffer_model if (buffer_model and "ember" in str(buffer_model).lower())
+            else (ember_model or luna_model or DEFAULT_CASCADE_EMBER_MODEL)
         )
-
-
+        self.luna_model = self.ember_model
 
         # Supporto retrocompatibile per haiku_model e free_model (Nemotron Free)
-
         passed_free = free_fallback_model or free_model
-
         if "haiku" in (passed_free or "").lower():
-
             self.haiku_model = passed_free
-
             self.free_model = DEFAULT_CASCADE_FREE_MODEL
-
         else:
-
             self.haiku_model = haiku_model or DEFAULT_CASCADE_HAIKU_MODEL
-
             self.free_model = passed_free or DEFAULT_CASCADE_FREE_MODEL
-
-
 
         # Risoluzione 3 Sezioni Cascata (con compatibilità per legacy variant="v1"/"v2" esplicito)
         if free_primary_mode is None and paid_mode is None and fallback_mode is None:
-            if variant is not None:
-                v_norm = str(variant).lower().strip()
-                if v_norm == "v2":
-                    self.free_primary_mode = "gemini_38_then_35"
-                    self.paid_mode = "luna_then_haiku"
-                    self.fallback_mode = "nemotron_free"
-                    self.variant = "v2"
-                else:
-                    self.free_primary_mode = "gemini_35"
-                    self.paid_mode = "luna_then_haiku"
-                    self.fallback_mode = "nemotron_free"
-                    self.variant = "v1"
-            else:
-                self.free_primary_mode = DEFAULT_CASCADE_FREE_PRIMARY_MODE
-                self.paid_mode = DEFAULT_CASCADE_PAID_MODE
-                self.fallback_mode = DEFAULT_CASCADE_FALLBACK_MODE
-                self.variant = "v1"
+            self.free_primary_mode = DEFAULT_CASCADE_FREE_PRIMARY_MODE
+            self.paid_mode = DEFAULT_CASCADE_PAID_MODE
+            self.fallback_mode = DEFAULT_CASCADE_FALLBACK_MODE
+            self.variant = "v1"
         else:
-            if variant is not None and str(variant).lower().strip() == "v2":
-                default_free = "gemini_38_then_35"
-                self.variant = "v2"
+            self.variant = "v1"
+            f_norm = (free_primary_mode or DEFAULT_CASCADE_FREE_PRIMARY_MODE).strip().lower()
+            if f_norm in ("none", "disattivato"):
+                self.free_primary_mode = "none"
             else:
-                default_free = DEFAULT_CASCADE_FREE_PRIMARY_MODE
-                self.variant = (variant or "v1").lower().strip()
-            self.free_primary_mode = (free_primary_mode or default_free).strip().lower()
+                self.free_primary_mode = "gemini_35"
             self.paid_mode = (paid_mode or DEFAULT_CASCADE_PAID_MODE).strip().lower()
             self.fallback_mode = (fallback_mode or DEFAULT_CASCADE_FALLBACK_MODE).strip().lower()
 
-
-
-        self.arbitrator_model = arbitrator_model
+        if arbitrator_model == "gemini-3.8-flash":
+            self.arbitrator_model = "gemini-3.5-flash-lite"
+        else:
+            self.arbitrator_model = arbitrator_model
 
         self.enable_auto_arbitrator = bool(enable_auto_arbitrator or kwargs.get("enable_paid_arbitration", False))
         self.enable_arbitrator_on_free = bool(
@@ -433,45 +384,37 @@ class CascadeVisionExtractor(BaseVisionExtractor):
         }
 
         user_prompt = custom_prompt or "Analizza l'immagine della scheda allegata ed estrai tutte le informazioni nel formato JSON specificato."
+        actual_model = model
+        reasoning_effort = None
+        if "muse-ember" in model.lower():
+            actual_model = "meta/muse-ember"
+            if ":low" in model.lower():
+                reasoning_effort = "low"
+            else:
+                reasoning_effort = "minimal"
 
         payload = {
-
-            "model": model,
-
+            "model": actual_model,
             "messages": [
-
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-
                 {
-
                     "role": "user",
-
                     "content": [
-
                         {"type": "text", "text": user_prompt},
-
                         {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_data}"}}
-
                     ]
-
                 }
-
             ],
-
             "response_format": {"type": "json_object"},
-
             "temperature": 0.0,
-
             "max_tokens": 8192
-
         }
 
-        if "nemotron" in model.lower():
-
+        if "nemotron" in actual_model.lower():
             payload["reasoning"] = {"effort": "none"}
-
-        elif "luna" in model.lower() or "haiku" in model.lower():
-
+        elif reasoning_effort is not None:
+            payload["reasoning"] = {"effort": reasoning_effort}
+        elif "luna" in actual_model.lower() or "haiku" in actual_model.lower():
             payload["reasoning"] = {"effort": "low"}
 
 
@@ -550,10 +493,10 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
     def _is_distinct_arbitrator(self, winner_model: str = "") -> bool:
         """Evita di invocare un modello arbitro identico al modello che ha già eseguito l'estrazione."""
-        arb = (self.arbitrator_model or "").strip().lower()
+        arb = (self.arbitrator_model or "").strip().lower().split(":")[0]
         if not arb:
             return False
-        win = (winner_model or "").strip().lower()
+        win = (winner_model or "").strip().lower().split(":")[0]
         if win and arb == win:
             return False
         return True
@@ -1125,7 +1068,11 @@ class CascadeVisionExtractor(BaseVisionExtractor):
 
                         cost_str = f"${cost:.4f}" if cost > 0 else "Gratis"
 
-                        arb_name = self.arbitrator_model.split("/")[-1].replace(":free", "").replace("-", " ").title()
+                        if "muse-ember" in self.arbitrator_model.lower():
+                            effort_lbl = "Low" if ":low" in self.arbitrator_model.lower() else "Minimal"
+                            arb_name = f"Meta Muse Ember ({effort_lbl})"
+                        else:
+                            arb_name = self.arbitrator_model.split("/")[-1].replace(":free", "").replace("-", " ").title()
 
                         haiku_raw.note_o_anomalie = (haiku_raw.note_o_anomalie or "") + f" [Arbitrato con successo da {arb_name} in {dur:.1f}s | {cost_str}]"
 
@@ -1278,14 +1225,15 @@ class CascadeVisionExtractor(BaseVisionExtractor):
             "tracker_prov": "openrouter_haiku",
             "is_free": False,
         }
-        luna_step = {
+        ember_step = {
             "kind": "openrouter",
-            "model": self.luna_model,
-            "short_name": "GPT-6 Luna (Low)",
-            "display": "GPT-6 Luna",
-            "tracker_prov": "openrouter",
+            "model": getattr(self, "ember_model", getattr(self, "luna_model", DEFAULT_CASCADE_EMBER_MODEL)),
+            "short_name": "Muse Ember (Minimal)",
+            "display": "Meta Muse Ember (Minimal)",
+            "tracker_prov": "openrouter_ember",
             "is_free": False,
         }
+        luna_step = ember_step  # Alias per compatibilità
         nemotron_step = {
             "kind": "openrouter",
             "model": self.free_model,
@@ -1298,30 +1246,25 @@ class CascadeVisionExtractor(BaseVisionExtractor):
         plan: List[Dict[str, Any]] = []
 
         # Sezione 1: Modello Principale Free (Google Diretto)
-        if self.free_primary_mode == "gemini_38":
-            plan.append(gemini_38)
-        elif self.free_primary_mode == "gemini_38_then_35":
-            plan.extend([gemini_38, gemini_35])
-        elif self.free_primary_mode == "gemini_35_then_38":
-            plan.extend([gemini_35, gemini_38])
-        elif self.free_primary_mode == "none":
+        if self.free_primary_mode in ("none", "disattivato"):
             pass
         else:
             plan.append(gemini_35)
 
         # Sezione 2: Modelli a Pagamento (OpenRouter)
-        if self.paid_mode == "haiku":
+        paid = (self.paid_mode or "").lower()
+        if paid in ("ember", "luna"):
+            plan.append(ember_step)
+        elif paid == "haiku":
             plan.append(haiku_step)
-        elif self.paid_mode == "luna":
-            plan.append(luna_step)
-        elif self.paid_mode == "haiku_then_luna":
-            plan.extend([haiku_step, luna_step])
-        elif self.paid_mode == "luna_then_haiku":
-            plan.extend([luna_step, haiku_step])
-        elif self.paid_mode in ("none", "disattivato", ""):
+        elif paid in ("ember_then_haiku", "luna_then_haiku"):
+            plan.extend([ember_step, haiku_step])
+        elif paid in ("haiku_then_ember", "haiku_then_luna"):
+            plan.extend([haiku_step, ember_step])
+        elif paid in ("none", "disattivato", ""):
             pass
         else:
-            plan.append(haiku_step)
+            plan.append(ember_step)
 
         # Sezione 3: Fallback Gratuito (OpenRouter)
         if self.fallback_mode == "nemotron_free":

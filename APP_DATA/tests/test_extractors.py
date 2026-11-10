@@ -207,6 +207,61 @@ class TestExtractors(unittest.TestCase):
         # Una sola registrazione tracker per primario HTTP 200
         self.assertEqual(extractor.tracker.record_call.call_count, 1)
 
+    def test_openrouter_muse_ember_pure_test_and_payload_config(self):
+        """Verifica configurazione payload di meta/muse-ember (reasoning, max_tokens=16384, timeout=60s) e modalita test puro."""
+        from unittest.mock import patch, MagicMock
+        from src.extractors.openrouter_extractor import OpenRouterVisionExtractor
+
+        extractor = OpenRouterVisionExtractor(
+            api_key="KEY_OR_TEST",
+            model="meta/muse-ember",
+            reasoning_effort="medium",
+            display_name="Meta Muse Ember (Medium)",
+            fallback_extractor=None,
+            enable_auto_fallback=False,
+        )
+        extractor.tracker = MagicMock()
+
+        captured_requests = []
+        dummy_resp = MagicMock()
+        dummy_resp.status_code = 200
+        dummy_resp.json.return_value = {
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": '{"supermercato": "CONAD EMBER", "numero_scheda": "A1", "righe_scatole": [{"categoria": "Pasta", "kg": 10.0}]}'
+                }
+            }],
+            "usage": {"total_tokens": 1200, "cost": 0.0007},
+        }
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            captured_requests.append({"url": url, "payload": json, "timeout": timeout})
+            return dummy_resp
+
+        with patch("requests.post", side_effect=fake_post):
+            with patch.object(extractor, "encode_and_optimize_image", return_value=("image/jpeg", "dummy_b64")):
+                card = extractor.extract_from_image("dummy.jpg")
+
+        self.assertEqual(len(captured_requests), 1)
+        req = captured_requests[0]
+        self.assertEqual(req["timeout"], (5, 60))
+        self.assertEqual(req["payload"]["max_tokens"], 16384)
+        self.assertEqual(req["payload"]["reasoning"], {"effort": "medium"})
+        self.assertEqual(card.supermercato, "CONAD EMBER")
+        self.assertIn("Meta Muse Ember (Medium)", card.note_o_anomalie)
+
+        # Verifica test puro su errore HTTP: mostra subito l'errore reale senza fallback
+        err_resp = MagicMock()
+        err_resp.status_code = 503
+        err_resp.text = "Service Unavailable"
+        with patch("requests.post", return_value=err_resp):
+            with patch.object(extractor, "encode_and_optimize_image", return_value=("image/jpeg", "dummy_b64")):
+                err_card = extractor.extract_from_image("dummy.jpg")
+        self.assertTrue(err_card.is_incomplete)
+        self.assertIn("503", err_card.note_o_anomalie)
+        self.assertIn("Meta Muse Ember (Medium)", err_card.note_o_anomalie)
+
 
 if __name__ == "__main__":
     unittest.main()
